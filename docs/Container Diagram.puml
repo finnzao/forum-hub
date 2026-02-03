@@ -1,0 +1,39 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Sistema Interno de Gestão do Fórum - C4 Containers
+
+Person(admin, "Administração", "Opera inventário, férias e indicadores.")
+Person(clerk, "Cartório / Servidores", "Executa tarefas, registra histórico e prazos.")
+Person(judge, "Magistrado", "Orquestra tarefas e consulta relatórios.")
+
+System_Boundary(forumSystem, "Sistema Interno de Gestão do Fórum") {
+
+  Container(web, "Web App", "Next.js (TypeScript)", "Forum Hub por perfil: Admin, Cartório, Magistrado.")
+  Container(api, "API Backend (Monólito Modular)", "NestJS (TypeScript)", "Clean Architecture; RBAC + ABAC; auditoria append-only.")
+  Container(worker, "Worker (Jobs/Agendamentos)", "Node.js (TypeScript) + BullMQ Worker", "Processa lembretes e automações via fila; não exposto à internet.")
+  ContainerDb(db, "Database", "PostgreSQL", "Dados transacionais + trilha de auditoria append-only.")
+  Container(queue, "Queue/Cache", "Redis", "Fila de jobs e cache; suporte a rate limiting.")
+}
+
+System_Ext(idp, "Identity Provider (IdP)", "OIDC/SAML (opcional).")
+System_Ext(notif, "Notification Provider", "SMTP/HTTP API (opcional).")
+System_Ext(filestorage, "File Storage", "Anexos e PDFs (opcional).")
+System_Ext(pje, "Sistema de Processos (PJe/outro)", "Integração futura.")
+
+Rel(admin, web, "Acessa", "HTTPS")
+Rel(clerk, web, "Acessa", "HTTPS")
+Rel(judge, web, "Acessa", "HTTPS")
+
+Rel(web, api, "Chama API", "HTTPS/REST (JSON)")
+Rel(api, db, "Lê/Escreve", "SQL/TCP")
+Rel(api, queue, "Publica jobs/usa cache", "TCP")
+Rel(worker, queue, "Consome jobs", "TCP")
+Rel(worker, db, "Atualiza status e registra eventos", "SQL/TCP")
+
+Rel(api, idp, "Autentica/valida tokens (opcional)", "OIDC/SAML")
+Rel(worker, notif, "Envia notificações (opcional)", "SMTP/HTTP")
+Rel(api, filestorage, "Armazena/consulta anexos e PDFs (opcional)", "HTTPS")
+Rel(api, pje, "Integração futura", "HTTPS")
+
+@enduml

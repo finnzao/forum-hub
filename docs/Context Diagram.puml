@@ -1,0 +1,26 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+title Sistema Interno de Gestão do Fórum - C4 Context
+
+Person(admin, "Administração", "Opera sistemas internos: inventário, férias, lotação, indicadores.")
+Person(clerk, "Cartório / Servidores", "Executa tarefas, registra histórico de trabalho e gerencia lembretes de prazos.")
+Person(judge, "Magistrado", "Orquestra tarefas do cartório, acompanha execução e consulta relatórios.")
+
+System(forumSystem, "Sistema Interno de Gestão do Fórum", "Portal único institucional com módulos administrativos e operacionais, rastreabilidade e auditoria.")
+
+System_Ext(idp, "Identity Provider (IdP)", "SSO/MFA via OIDC/SAML (opcional).")
+System_Ext(notif, "Notification Provider", "Envio de notificações (e-mail/SMS/push) (opcional).")
+System_Ext(filestorage, "File Storage", "Armazenamento de anexos e PDFs (opcional).")
+System_Ext(pje, "Sistema de Processos (PJe/outro)", "Integração futura para dados de processos.")
+
+Rel(admin, forumSystem, "Usa para gestão administrativa")
+Rel(clerk, forumSystem, "Usa para tarefas, histórico e lembretes")
+Rel(judge, forumSystem, "Usa para orquestração e relatórios")
+
+Rel(forumSystem, idp, "Autentica/valida tokens (opcional)", "OIDC/SAML")
+Rel(forumSystem, notif, "Envia notificações (opcional)", "SMTP/HTTP")
+Rel(forumSystem, filestorage, "Armazena/consulta anexos e PDFs (opcional)", "HTTPS")
+Rel(forumSystem, pje, "Integração futura", "HTTPS")
+
+@enduml
