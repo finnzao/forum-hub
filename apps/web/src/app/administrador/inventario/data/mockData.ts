@@ -12,6 +12,8 @@ export const LOCALIZACOES = [
   'Depósito',
 ];
 
+export const CATEGORIAS = ['TI', 'Escritorio', 'Mobiliario'];
+
 export const itensInventario: ItemInventario[] = [
   {
     id: '1',
@@ -25,7 +27,6 @@ export const itensInventario: ItemInventario[] = [
     localizacaoAtual: 'Sala 101 - TI',
     status: 'ativo',
     dataAquisicao: '2024-01-15',
-    valorAquisicao: 4500.00,
     observacoes: 'Equipamento em uso pela equipe de desenvolvimento',
     criadoEm: '2024-01-15T10:00:00',
     atualizadoEm: '2024-01-15T10:00:00',
@@ -39,7 +40,6 @@ export const itensInventario: ItemInventario[] = [
     localizacaoAtual: 'Sala 101 - TI',
     status: 'ativo',
     dataAquisicao: '2024-01-20',
-    valorAquisicao: 1800.00,
     criadoEm: '2024-01-20T14:30:00',
     atualizadoEm: '2024-01-20T14:30:00',
   },
@@ -55,7 +55,6 @@ export const itensInventario: ItemInventario[] = [
     localizacaoAtual: 'Sala 102 - Administrativo',
     status: 'ativo',
     dataAquisicao: '2024-02-01',
-    valorAquisicao: 850.00,
     criadoEm: '2024-02-01T09:00:00',
     atualizadoEm: '2024-02-01T09:00:00',
   },
@@ -68,7 +67,6 @@ export const itensInventario: ItemInventario[] = [
     localizacaoAtual: 'Sala 102 - Administrativo',
     status: 'ativo',
     dataAquisicao: '2024-02-01',
-    valorAquisicao: 650.00,
     criadoEm: '2024-02-01T09:15:00',
     atualizadoEm: '2024-02-01T09:15:00',
   },
@@ -81,7 +79,6 @@ export const itensInventario: ItemInventario[] = [
     localizacaoAtual: 'Sala 102 - Administrativo',
     status: 'manutencao',
     dataAquisicao: '2023-11-10',
-    valorAquisicao: 2200.00,
     observacoes: 'Em manutenção - problema no fusor',
     criadoEm: '2023-11-10T11:00:00',
     atualizadoEm: '2026-02-03T16:45:00',
@@ -95,7 +92,6 @@ export const itensInventario: ItemInventario[] = [
     localizacaoAtual: 'Recepção',
     status: 'ativo',
     dataAquisicao: '2024-01-05',
-    valorAquisicao: 45.00,
     criadoEm: '2024-01-05T08:00:00',
     atualizadoEm: '2024-01-05T08:00:00',
   },
@@ -111,7 +107,6 @@ export const itensInventario: ItemInventario[] = [
     localizacaoAtual: 'Sala 201 - Contabilidade',
     status: 'ativo',
     dataAquisicao: '2024-01-25',
-    valorAquisicao: 980.00,
     criadoEm: '2024-01-25T10:30:00',
     atualizadoEm: '2024-01-25T10:30:00',
   },
@@ -124,7 +119,6 @@ export const itensInventario: ItemInventario[] = [
     localizacaoAtual: 'Sala 101 - TI',
     status: 'ativo',
     dataAquisicao: '2024-02-10',
-    valorAquisicao: 350.00,
     criadoEm: '2024-02-10T14:00:00',
     atualizadoEm: '2024-02-10T14:00:00',
   },
@@ -202,6 +196,5 @@ export const estatisticas: EstatisticasInventario = {
     manutencao: 1,
     baixado: 0,
   },
-  valorTotal: 11375.00,
   movimentacoesMes: 5,
 };

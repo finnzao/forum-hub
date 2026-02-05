@@ -2,39 +2,65 @@
 
 import React, { useState, useMemo } from 'react';
 import Link from 'next/link';
-import {
-  Package,
-  ArrowLeft,
-  TrendingUp,
-  MapPin,
-  Calendar,
-  DollarSign,
-  FileText,
-} from 'lucide-react';
+import { Package, ArrowLeft, TrendingUp, Plus, FileText } from 'lucide-react';
 import { Cabecalho } from '../../componentes/layout/Cabecalho';
 import { Rodape } from '../../componentes/layout/Rodape';
 import { CardEstatistica } from './componentes/CardEstatistica';
 import { FiltrosInventarioComponent } from './componentes/FiltrosInventario';
 import { Tabela } from './componentes/Tabela';
 import { Badge } from './componentes/Badge';
-import { ModalDetalhesItem } from './componentes/ModalDetalhesItem';
+import { ModalAcoesItem } from './componentes/ModalAcoesItem';
+import { ModalNovoItem } from './componentes/ModalNovoItem';
 import {
-  itensInventario,
-  movimentacoes,
-  estatisticas,
+  itensInventario as itensIniciais,
+  movimentacoes as movimentacoesIniciais,
+  estatisticas as estatisticasIniciais,
   LOCALIZACOES,
+  CATEGORIAS,
 } from './data/mockData';
-import { ItemInventario, FiltrosInventario, Movimentacao } from './types/inventario';
+import {
+  ItemInventario,
+  FiltrosInventario,
+  Movimentacao,
+  FormularioNovoItem,
+} from './types/inventario';
+
+type AbaAtiva = 'inventario' | 'movimentacoes';
 
 export default function PaginaInventario() {
-  const [abaAtiva, setAbaAtiva] = useState<'itens' | 'movimentacoes'>('itens');
+  const [abaAtiva, setAbaAtiva] = useState<AbaAtiva>('inventario');
   const [filtros, setFiltros] = useState<FiltrosInventario>({});
   const [itemSelecionado, setItemSelecionado] = useState<ItemInventario | null>(null);
-  const [modalAberto, setModalAberto] = useState(false);
+  const [modalAcoesAberto, setModalAcoesAberto] = useState(false);
+  const [modalNovoAberto, setModalNovoAberto] = useState(false);
+
+  // Estados mutáveis (simulando backend)
+  const [itens, setItens] = useState<ItemInventario[]>(itensIniciais);
+  const [movimentacoes, setMovimentacoes] = useState<Movimentacao[]>(movimentacoesIniciais);
+  const [localizacoes, setLocalizacoes] = useState<string[]>(LOCALIZACOES);
+  const [categorias, setCategorias] = useState<string[]>(CATEGORIAS);
+
+  // Recalcular estatísticas
+  const estatisticas = useMemo(() => {
+    const porCategoria: Record<string, number> = {};
+    const porStatus: Record<string, number> = { ativo: 0, manutencao: 0, baixado: 0 };
+
+    itens.forEach((item) => {
+      porCategoria[item.categoria] = (porCategoria[item.categoria] || 0) + 1;
+      porStatus[item.status] = (porStatus[item.status] || 0) + 1;
+    });
+
+    return {
+      totalItens: itens.length,
+      porCategoria,
+      porStatus,
+      movimentacoesMes: movimentacoes.length,
+    };
+  }, [itens, movimentacoes]);
 
   // Filtrar itens
   const itensFiltrados = useMemo(() => {
-    return itensInventario.filter((item) => {
+    return itens.filter((item) => {
       if (filtros.categoria && item.categoria !== filtros.categoria) return false;
       if (filtros.localizacao && item.localizacaoAtual !== filtros.localizacao)
         return false;
@@ -49,11 +75,106 @@ export default function PaginaInventario() {
       }
       return true;
     });
-  }, [filtros]);
+  }, [itens, filtros]);
 
-  const abrirDetalhes = (item: ItemInventario) => {
+  const abrirAcoes = (item: ItemInventario) => {
     setItemSelecionado(item);
-    setModalAberto(true);
+    setModalAcoesAberto(true);
+  };
+
+  const handleNovoItem = (form: FormularioNovoItem) => {
+    const tombos = [];
+    if (form.tomboAzul) tombos.push({ tipo: 'azul' as const, numero: form.tomboAzul });
+    if (form.tomboCinza) tombos.push({ tipo: 'cinza' as const, numero: form.tomboCinza });
+
+    const novoItem: ItemInventario = {
+      id: String(Date.now()),
+      nome: form.nome,
+      descricao: form.descricao,
+      categoria: form.categoria,
+      tombos,
+      localizacaoAtual: form.localizacaoAtual,
+      status: 'ativo',
+      dataAquisicao: form.dataAquisicao,
+      observacoes: form.observacoes,
+      criadoEm: new Date().toISOString(),
+      atualizadoEm: new Date().toISOString(),
+    };
+
+    setItens([...itens, novoItem]);
+
+    // Adicionar nova categoria/localização se não existir
+    if (!categorias.includes(form.categoria)) {
+      setCategorias([...categorias, form.categoria]);
+    }
+    if (!localizacoes.includes(form.localizacaoAtual)) {
+      setLocalizacoes([...localizacoes, form.localizacaoAtual]);
+    }
+
+    // Criar movimentação de entrada
+    const novaMovimentacao: Movimentacao = {
+      id: String(Date.now()),
+      itemId: novoItem.id,
+      itemNome: novoItem.nome,
+      tipo: 'entrada',
+      destino: novoItem.localizacaoAtual,
+      responsavel: 'Usuário Admin',
+      data: new Date().toISOString().split('T')[0],
+      observacoes: 'Cadastro inicial do item',
+      criadoEm: new Date().toISOString(),
+    };
+
+    setMovimentacoes([novaMovimentacao, ...movimentacoes]);
+  };
+
+  const handleTransferir = (itemId: string, novaLocalizacao: string) => {
+    const item = itens.find((i) => i.id === itemId);
+    if (!item) return;
+
+    const localizacaoAnterior = item.localizacaoAtual;
+
+    setItens(
+      itens.map((i) =>
+        i.id === itemId
+          ? { ...i, localizacaoAtual: novaLocalizacao, atualizadoEm: new Date().toISOString() }
+          : i
+      )
+    );
+
+    // Adicionar nova localização se não existir
+    if (!localizacoes.includes(novaLocalizacao)) {
+      setLocalizacoes([...localizacoes, novaLocalizacao]);
+    }
+
+    // Criar movimentação
+    const novaMovimentacao: Movimentacao = {
+      id: String(Date.now()),
+      itemId: item.id,
+      itemNome: item.nome,
+      tipo: 'transferencia',
+      origem: localizacaoAnterior,
+      destino: novaLocalizacao,
+      responsavel: 'Usuário Admin',
+      data: new Date().toISOString().split('T')[0],
+      criadoEm: new Date().toISOString(),
+    };
+
+    setMovimentacoes([novaMovimentacao, ...movimentacoes]);
+  };
+
+  const handleEditar = (itemEditado: ItemInventario) => {
+    setItens(
+      itens.map((i) =>
+        i.id === itemEditado.id
+          ? { ...itemEditado, atualizadoEm: new Date().toISOString() }
+          : i
+      )
+    );
+  };
+
+  const handleExcluir = (itemId: string) => {
+    setItens(itens.filter((i) => i.id !== itemId));
+    setMovimentacoes(movimentacoes.filter((m) => m.itemId !== itemId));
   };
 
   const obterCorStatus = (status: string) => {
@@ -86,12 +207,12 @@ export default function PaginaInventario() {
     {
       chave: 'nome',
       titulo: 'Nome',
-      largura: '25%',
+      largura: '30%',
     },
     {
       chave: 'tombos',
       titulo: 'Tombos',
-      largura: '20%',
+      largura: '25%',
       renderizar: (item: ItemInventario) => (
         <div className="flex flex-wrap gap-1">
           {item.tombos.map((tombo, idx) => (
@@ -109,7 +230,7 @@ export default function PaginaInventario() {
     {
       chave: 'categoria',
       titulo: 'Categoria',
-      largura: '12%',
+      largura: '15%',
     },
     {
       chave: 'localizacaoAtual',
@@ -119,22 +240,12 @@ export default function PaginaInventario() {
     {
       chave: 'status',
       titulo: 'Status',
-      largura: '12%',
+      largura: '10%',
       renderizar: (item: ItemInventario) => (
         <Badge variante={obterCorStatus(item.status)}>
           {item.status.toUpperCase()}
         </Badge>
       ),
-    },
-    {
-      chave: 'valorAquisicao',
-      titulo: 'Valor',
-      largura: '11%',
-      renderizar: (item: ItemInventario) =>
-        item.valorAquisicao.toLocaleString('pt-BR', {
-          style: 'currency',
-          currency: 'BRL',
-        }),
     },
   ];
 
@@ -180,7 +291,7 @@ export default function PaginaInventario() {
     },
     {
       chave: 'observacoes',
-      titulo: 'Observações',
+      titulo: 'Obs.',
       largura: '8%',
       renderizar: (mov: Movimentacao) => (mov.observacoes ? '📝' : '-'),
     },
@@ -195,7 +306,7 @@ export default function PaginaInventario() {
       />
 
       <main className="max-w-7xl mx-auto px-8 py-12">
-        {/* Breadcrumb e Título */}
+        {/* Cabeçalho */}
         <div className="mb-8">
           <Link
             href="/administrador"
@@ -204,75 +315,27 @@ export default function PaginaInventario() {
             <ArrowLeft size={16} />
             Voltar ao Painel
           </Link>
-          <div className="flex items-center gap-4 mb-3">
-            <div className="p-3 bg-blue-100 text-blue-700 border-2 border-blue-200">
-              <Package size={32} strokeWidth={2} />
-            </div>
-            <div>
-              <h1 className="text-3xl font-bold text-slate-900">
-                Sistema de Inventário
-              </h1>
-              <p className="text-slate-600 mt-1">
-                Gestão patrimonial com controle completo e auditoria
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Dashboard - Estatísticas */}
-        <div className="mb-8">
-          <h2 className="text-lg font-bold text-slate-900 mb-4 uppercase tracking-wide">
-            Resumo do Patrimônio
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <CardEstatistica
-              titulo="Total de Itens"
-              valor={estatisticas.totalItens}
-              icone={<Package size={24} />}
-              cor="azul"
-            />
-            <CardEstatistica
-              titulo="Valor Total"
-              valor={estatisticas.valorTotal.toLocaleString('pt-BR', {
-                style: 'currency',
-                currency: 'BRL',
-              })}
-              icone={<DollarSign size={24} />}
-              cor="verde"
-            />
-            <CardEstatistica
-              titulo="Movimentações/Mês"
-              valor={estatisticas.movimentacoesMes}
-              icone={<TrendingUp size={24} />}
-              cor="roxo"
-              tendencia={{ valor: '+2 vs mês anterior', positiva: true }}
-            />
-            <CardEstatistica
-              titulo="Em Manutenção"
-              valor={estatisticas.porStatus.manutencao}
-              icone={<FileText size={24} />}
-              cor="ambar"
-            />
-          </div>
-        </div>
-
-        {/* Distribuição por Categoria */}
-        <div className="mb-8 bg-white border-2 border-slate-200 p-6">
-          <h3 className="text-lg font-bold text-slate-900 mb-4 uppercase tracking-wide">
-            Distribuição por Categoria
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {Object.entries(estatisticas.porCategoria).map(([categoria, quantidade]) => (
-              <div
-                key={categoria}
-                className="p-4 bg-slate-50 border-2 border-slate-200"
-              >
-                <p className="text-sm font-semibold text-slate-600 mb-1">
-                  {categoria}
-                </p>
-                <p className="text-2xl font-bold text-slate-900">{quantidade} itens</p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-blue-100 text-blue-700 border-2 border-blue-200">
+                <Package size={32} strokeWidth={2} />
               </div>
-            ))}
+              <div>
+                <h1 className="text-3xl font-bold text-slate-900">
+                  Sistema de Inventário
+                </h1>
+                <p className="text-slate-600 mt-1">
+                  Gestão patrimonial com controle completo
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setModalNovoAberto(true)}
+              className="flex items-center gap-2 px-6 py-3 bg-slate-700 hover:bg-slate-800 text-white font-semibold transition-colors"
+            >
+              <Plus size={20} />
+              Novo Item
+            </button>
           </div>
         </div>
 
@@ -280,14 +343,14 @@ export default function PaginaInventario() {
         <div className="mb-6">
           <div className="flex border-b-2 border-slate-200">
             <button
-              onClick={() => setAbaAtiva('itens')}
+              onClick={() => setAbaAtiva('inventario')}
               className={`px-6 py-3 font-bold transition-colors ${
-                abaAtiva === 'itens'
+                abaAtiva === 'inventario'
                   ? 'border-b-4 border-slate-900 text-slate-900'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Itens do Inventário ({itensFiltrados.length})
+              Inventário ({itensFiltrados.length})
             </button>
             <button
               onClick={() => setAbaAtiva('movimentacoes')}
@@ -303,23 +366,86 @@ export default function PaginaInventario() {
         </div>
 
         {/* Conteúdo das Abas */}
-        {abaAtiva === 'itens' ? (
+        {abaAtiva === 'inventario' && (
           <>
+            {/* Resumo do Patrimônio */}
+            <div className="mb-8">
+              <h2 className="text-lg font-bold text-slate-900 mb-4 uppercase tracking-wide">
+                Resumo do Patrimônio
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <CardEstatistica
+                  titulo="Total de Itens"
+                  valor={estatisticas.totalItens}
+                  icone={<Package size={24} />}
+                  cor="azul"
+                />
+                <CardEstatistica
+                  titulo="Movimentações/Mês"
+                  valor={estatisticas.movimentacoesMes}
+                  icone={<TrendingUp size={24} />}
+                  cor="roxo"
+                />
+                <CardEstatistica
+                  titulo="Em Manutenção"
+                  valor={estatisticas.porStatus.manutencao}
+                  icone={<FileText size={24} />}
+                  cor="ambar"
+                />
+                <CardEstatistica
+                  titulo="Baixados"
+                  valor={estatisticas.porStatus.baixado}
+                  icone={<FileText size={24} />}
+                  cor="vermelho"
+                />
+              </div>
+            </div>
+
+            <div className="bg-white border-2 border-slate-200 p-6 mb-8">
+              <h3 className="text-lg font-bold text-slate-900 mb-4 uppercase tracking-wide">
+                Distribuição por Categoria
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {Object.entries(estatisticas.porCategoria).map(([categoria, quantidade]) => (
+                  <div
+                    key={categoria}
+                    className="p-4 bg-slate-50 border-2 border-slate-200"
+                  >
+                    <p className="text-sm font-semibold text-slate-600 mb-1">
+                      {categoria}
+                    </p>
+                    <p className="text-2xl font-bold text-slate-900">
+                      {quantidade} {quantidade === 1 ? 'item' : 'itens'}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Listagem de Itens */}
+            <div className="mb-4">
+              <h2 className="text-lg font-bold text-slate-900 mb-4 uppercase tracking-wide">
+                Itens do Inventário
+              </h2>
+            </div>
+            
             <FiltrosInventarioComponent
               filtros={filtros}
-              localizacoes={LOCALIZACOES}
+              localizacoes={localizacoes}
               onFiltrosChange={setFiltros}
             />
             <div className="bg-white border-2 border-slate-200">
               <Tabela
                 dados={itensFiltrados}
                 colunas={colunasItens}
-                onCliqueLinha={abrirDetalhes}
+                onCliqueLinha={abrirAcoes}
                 mensagemVazia="Nenhum item encontrado com os filtros aplicados"
               />
             </div>
           </>
-        ) : (
+        )}
+
+        {abaAtiva === 'movimentacoes' && (
           <div className="bg-white border-2 border-slate-200">
             <Tabela
               dados={movimentacoes}
@@ -328,30 +454,27 @@ export default function PaginaInventario() {
             />
           </div>
         )}
-
-        {/* Informações de Auditoria */}
-        <div className="mt-8 p-6 bg-blue-50 border-2 border-blue-200">
-          <div className="flex items-start gap-4">
-            <Calendar size={24} className="text-blue-700 flex-shrink-0 mt-1" />
-            <div>
-              <h4 className="font-bold text-blue-900 mb-2">Auditoria Completa</h4>
-              <p className="text-sm text-blue-800 leading-relaxed">
-                Todas as operações de criação, edição e movimentação são registradas
-                com timestamp e responsável. O histórico completo está disponível para
-                consulta e geração de relatórios de compliance.
-              </p>
-            </div>
-          </div>
-        </div>
       </main>
 
       <Rodape />
 
-      {/* Modal de Detalhes */}
-      <ModalDetalhesItem
+      {/* Modais */}
+      <ModalAcoesItem
         item={itemSelecionado}
-        aberto={modalAberto}
-        onFechar={() => setModalAberto(false)}
+        aberto={modalAcoesAberto}
+        onFechar={() => setModalAcoesAberto(false)}
+        onTransferir={handleTransferir}
+        onEditar={handleEditar}
+        onExcluir={handleExcluir}
+        localizacoes={localizacoes}
+      />
+
+      <ModalNovoItem
+        aberto={modalNovoAberto}
+        onFechar={() => setModalNovoAberto(false)}
+        onSalvar={handleNovoItem}
+        categorias={categorias}
+        localizacoes={localizacoes}
       />
     </div>
   );

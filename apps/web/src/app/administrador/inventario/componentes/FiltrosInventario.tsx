@@ -1,7 +1,7 @@
 // componentes/FiltrosInventario.tsx
 import React from 'react';
 import { Search, Filter, X } from 'lucide-react';
-import { FiltrosInventario, CategoriaItem, StatusItem } from '../types/inventario';
+import { FiltrosInventario, StatusItem } from '../types/inventario';
 
 interface FiltrosInventarioProps {
   filtros: FiltrosInventario;
@@ -14,7 +14,6 @@ export const FiltrosInventarioComponent: React.FC<FiltrosInventarioProps> = ({
   localizacoes,
   onFiltrosChange,
 }) => {
-  const categorias: CategoriaItem[] = ['TI', 'Escritorio', 'Mobiliario'];
   const statusOpcoes: StatusItem[] = ['ativo', 'manutencao', 'baixado'];
 
   const limparFiltros = () => {
@@ -41,7 +40,7 @@ export const FiltrosInventarioComponent: React.FC<FiltrosInventarioProps> = ({
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Busca */}
         <div>
           <label className="block text-sm font-semibold text-slate-700 mb-2">
@@ -62,30 +61,6 @@ export const FiltrosInventarioComponent: React.FC<FiltrosInventarioProps> = ({
               className="w-full pl-10 pr-4 py-2 border-2 border-slate-200 focus:border-slate-400 focus:outline-none text-sm"
             />
           </div>
-        </div>
-
-        {/* Categoria */}
-        <div>
-          <label className="block text-sm font-semibold text-slate-700 mb-2">
-            Categoria
-          </label>
-          <select
-            value={filtros.categoria || ''}
-            onChange={(e) =>
-              onFiltrosChange({
-                ...filtros,
-                categoria: (e.target.value as CategoriaItem) || undefined,
-              })
-            }
-            className="w-full px-4 py-2 border-2 border-slate-200 focus:border-slate-400 focus:outline-none text-sm"
-          >
-            <option value="">Todas</option>
-            {categorias.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
         </div>
 
         {/* Localização */}

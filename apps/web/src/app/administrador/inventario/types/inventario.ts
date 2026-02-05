@@ -1,6 +1,6 @@
 // types/inventario.ts
 
-export type CategoriaItem = 'TI' | 'Escritorio' | 'Mobiliario';
+export type CategoriaItem = string; // Agora aceita qualquer string para autocomplete
 export type TipoTombo = 'azul' | 'cinza';
 export type TipoMovimentacao = 'entrada' | 'saida' | 'transferencia';
 export type StatusItem = 'ativo' | 'manutencao' | 'baixado';
@@ -13,13 +13,12 @@ export interface Tombo {
 export interface ItemInventario {
   id: string;
   nome: string;
-  descricao: string;
-  categoria: CategoriaItem;
+  descricao?: string;
+  categoria: string;
   tombos: Tombo[];
   localizacaoAtual: string;
   status: StatusItem;
   dataAquisicao: string;
-  valorAquisicao: number;
   observacoes?: string;
   criadoEm: string;
   atualizadoEm: string;
@@ -39,7 +38,7 @@ export interface Movimentacao {
 }
 
 export interface FiltrosInventario {
-  categoria?: CategoriaItem;
+  categoria?: string;
   localizacao?: string;
   status?: StatusItem;
   busca?: string;
@@ -47,8 +46,18 @@ export interface FiltrosInventario {
 
 export interface EstatisticasInventario {
   totalItens: number;
-  porCategoria: Record<CategoriaItem, number>;
+  porCategoria: Record<string, number>;
   porStatus: Record<StatusItem, number>;
-  valorTotal: number;
   movimentacoesMes: number;
+}
+
+export interface FormularioNovoItem {
+  nome: string;
+  descricao?: string;
+  categoria: string;
+  tomboAzul?: string;
+  tomboCinza?: string;
+  localizacaoAtual: string;
+  dataAquisicao: string;
+  observacoes?: string;
 }
