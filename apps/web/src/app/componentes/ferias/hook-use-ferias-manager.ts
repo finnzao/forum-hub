@@ -6,7 +6,7 @@ import {
   EstatisticasFerias,
   FiltrosAusencia,
   ResultadoValidacao,
-} from '../tipos/ferias';
+} from '../../tipos/ferias';
 import { validarAusencia } from '../utils/validacaoFerias';
 import { contarDiasCorridos, contarDiasUteis } from '../utils/datas';
 

@@ -7,7 +7,7 @@ import { Rodape } from '../../../componentes/layout/Rodape';
 import { CardAusencia } from '../../../../componentes/ferias/CardAusencia';
 import { useFeriasManager } from '../../../../hooks/useFeriasManager';
 import Link from 'next/link';
-import { StatusAusencia } from '../../../../tipos/ferias';
+import { StatusAusencia } from '../../tipos/ferias';
 
 export default function PaginaSolicitacoes() {
   const { ausencias, aprovarAusencia, rejeitarAusencia } = useFeriasManager();

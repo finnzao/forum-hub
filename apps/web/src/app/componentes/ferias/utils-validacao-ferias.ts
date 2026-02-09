@@ -1,4 +1,4 @@
-import { Ausencia, ConflitoDia, ResultadoValidacao, Setor } from '../tipos/ferias';
+import { Ausencia, ConflitoDia, ResultadoValidacao, Setor } from '../../tipos/ferias';
 import { obterDatasEntre, formatarData } from './datas';
 
 /**
