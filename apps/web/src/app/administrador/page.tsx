@@ -44,7 +44,7 @@ export default function PaginaAdministrador() {
             />
             <CartaoModulo
               icone={<Calendar size={28} strokeWidth={2} />}
-              titulo="Férias"
+              titulo="Controle de Férias e Ausências"
               descricao="Controle de solicitações, aprovações e calendário anual. Relatórios de cobertura e exportação em PDF."
               href="/administrador/ferias"
               estatisticas={{
