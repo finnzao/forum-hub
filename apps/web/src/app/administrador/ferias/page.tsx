@@ -28,7 +28,7 @@ export default function PaginaFerias() {
   const [anoAtual, setAnoAtual] = useState(2026);
   const [view, setView] = useState<ViewType>('heatmap');
 
-  // Simular carregamento inicial (substituir por fetch real em produção)
+  // Teste carregamento
   useEffect(() => {
     setLoading(true);
     const timer = setTimeout(() => {

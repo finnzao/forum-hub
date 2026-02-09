@@ -40,11 +40,17 @@ export const PainelSetores: React.FC<PainelSetoresProps> = ({
         padding: isMobile ? '12px 14px' : '16px 20px', borderBottom: '2px solid #e8e6e1',
         display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f5f4f0',
       }}>
-        <div style={{ fontWeight: 700, fontSize: isMobile ? 14 : 15 }}>🏢 Setores</div>
+        <div style={{ fontWeight: 700, fontSize: isMobile ? 14 : 15 }}>Setores</div>
         <button onClick={() => setShowAdd(!showAdd)} style={{
           background: '#1a1a1a', color: '#fff', border: 'none', borderRadius: 4,
           padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
         }}>+ Novo</button>
+      </div>
+      <div style={{
+        padding: isMobile ? '8px 14px' : '8px 20px', borderBottom: '1px solid #e8e6e1',
+        background: '#fdfcfa', fontSize: 11, color: '#999', lineHeight: 1.5, opacity: 0.85,
+      }}>
+        Limite define o número máximo de funcionários que podem estar ausentes ao mesmo tempo no setor.
       </div>
       {showAdd && (
         <div style={{ padding: isMobile ? 12 : 16, borderBottom: '2px solid #e8e6e1', background: '#faf9f6' }}>

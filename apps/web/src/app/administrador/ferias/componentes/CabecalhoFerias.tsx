@@ -40,11 +40,6 @@ export const CabecalhoFerias: React.FC<CabecalhoFeriasProps> = ({
             width: 34, height: 34, minWidth: 34, borderRadius: 6, background: '#333',
             color: '#aaa', textDecoration: 'none', fontSize: 18,
           }} title="Voltar ao Administrador">←</Link>
-          <div style={{
-            width: 34, height: 34, minWidth: 34, background: '#ef6c00', borderRadius: 6,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontWeight: 700, fontSize: 15, fontFamily: "'JetBrains Mono', monospace",
-          }}>F</div>
           {!isMobile && (
             <div style={{
               fontWeight: 700, fontSize: isTablet ? 14 : 17, letterSpacing: -0.3,
