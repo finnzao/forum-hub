@@ -1,6 +1,7 @@
 import { RegistroHistorico } from '../types';
 
 export const registrosMock: RegistroHistorico[] = [
+  // ====== EXISTENTES (mantidos) ======
   {
     id: 'r001',
     processo: '0001234-56.2025.8.28.0001',
@@ -200,6 +201,222 @@ export const registrosMock: RegistroHistorico[] = [
     nota: 'Alvará de levantamento — valor de R$ 8.500,00.',
     lembretes: [
       { id: 'l011', data: '12/02/2026', texto: 'Conferir se alvará foi retirado', concluido: false },
+    ],
+  },
+  {
+    id: 'r021',
+    processo: '0012345-10.2025.8.28.0001',
+    data: '10/02/2026',
+    tipo: 'despacho',
+    qtdAtos: 1,
+    nota: 'Despacho determinando emenda à inicial para juntar documentos faltantes.',
+    lembretes: [
+      { id: 'l012', data: '20/02/2026', texto: 'Checar se a parte juntou os documentos', concluido: false },
+    ],
+  },
+  {
+    id: 'r022',
+    processo: '0012345-10.2025.8.28.0001',
+    data: '10/02/2026',
+    tipo: 'juntada_peticao',
+    qtdAtos: 2,
+    nota: 'Juntada de petição com documentos complementares (procuração e comprovante de endereço).',
+    lembretes: [],
+  },
+  {
+    id: 'r023',
+    processo: '0098765-43.2024.8.28.0001',
+    data: '09/02/2026',
+    tipo: 'intimacao',
+    qtdAtos: 1,
+    nota: 'Intimação da parte autora para manifestar-se sobre contestação.',
+    lembretes: [
+      { id: 'l013', data: '24/02/2026', texto: 'Controlar prazo de réplica', concluido: false },
+    ],
+  },
+  {
+    id: 'r024',
+    processo: '0032109-87.2025.8.28.0001',
+    data: '09/02/2026',
+    tipo: 'oficio',
+    qtdAtos: 1,
+    nota: 'Ofício ao INSS solicitando CNIS e vínculos empregatícios.',
+    lembretes: [
+      { id: 'l014', data: '26/02/2026', texto: 'Cobrar retorno do INSS', concluido: false },
+    ],
+  },
+  {
+    id: 'r025',
+    processo: '0044440-12.2025.8.28.0001',
+    data: '08/02/2026',
+    tipo: 'decisao_interlocutoria',
+    qtdAtos: 1,
+    nota: 'Indeferida gratuidade por ausência de comprovação; intimar para recolher custas.',
+    lembretes: [
+      { id: 'l015', data: '15/02/2026', texto: 'Verificar recolhimento das custas', concluido: false },
+    ],
+  },
+  {
+    id: 'r026',
+    processo: '0044440-12.2025.8.28.0001',
+    data: '08/02/2026',
+    tipo: 'certidao',
+    qtdAtos: 1,
+    nota: 'Certidão: custas iniciais recolhidas e guias anexadas.',
+    lembretes: [],
+  },
+  {
+    id: 'r027',
+    processo: '0076543-21.2024.8.28.0001',
+    data: '07/02/2026',
+    tipo: 'mandado',
+    qtdAtos: 1,
+    nota: 'Mandado de intimação expedido ao executado.',
+    lembretes: [
+      { id: 'l016', data: '21/02/2026', texto: 'Confirmar cumprimento do mandado', concluido: false },
+    ],
+  },
+  {
+    id: 'r028',
+    processo: '0076543-21.2024.8.28.0001',
+    data: '07/02/2026',
+    tipo: 'penhora',
+    qtdAtos: 2,
+    nota: 'Penhora de veículo com restrição RENAJUD lançada.',
+    lembretes: [
+      { id: 'l017', data: '13/02/2026', texto: 'Intimar executado da restrição RENAJUD', concluido: false },
+      { id: 'l018', data: '28/02/2026', texto: 'Checar avaliação do bem', concluido: false },
+    ],
+  },
+  {
+    id: 'r029',
+    processo: '0066001-90.2025.8.28.0001',
+    data: '06/02/2026',
+    tipo: 'conclusao',
+    qtdAtos: 1,
+    nota: 'Conclusão ao magistrado para análise de pedido liminar.',
+    lembretes: [],
+  },
+  {
+    id: 'r030',
+    processo: '0066001-90.2025.8.28.0001',
+    data: '06/02/2026',
+    tipo: 'despacho',
+    qtdAtos: 1,
+    nota: 'Despacho: requisitar informações à autoridade coatora no prazo legal.',
+    lembretes: [
+      { id: 'l019', data: '18/02/2026', texto: 'Controlar prazo de informações', concluido: false },
+    ],
+  },
+  {
+    id: 'r031',
+    processo: '0088881-77.2024.8.28.0001',
+    data: '05/02/2026',
+    tipo: 'audiencia_conciliacao',
+    qtdAtos: 1,
+    nota: 'Audiência redesignada por ausência de citação válida.',
+    lembretes: [
+      { id: 'l020', data: '19/02/2026', texto: 'Verificar nova tentativa de citação', concluido: false },
+    ],
+  },
+  {
+    id: 'r032',
+    processo: '0088881-77.2024.8.28.0001',
+    data: '05/02/2026',
+    tipo: 'citacao',
+    qtdAtos: 1,
+    nota: 'Citação por oficial de justiça — diligência negativa (parte não localizada).',
+    lembretes: [
+      { id: 'l021', data: '12/02/2026', texto: 'Intimar autor para indicar novo endereço', concluido: false },
+    ],
+  },
+  {
+    id: 'r033',
+    processo: '0024680-33.2025.8.28.0001',
+    data: '04/02/2026',
+    tipo: 'publicacao',
+    qtdAtos: 1,
+    nota: 'Publicação de despacho saneador.',
+    lembretes: [
+      { id: 'l022', data: '17/02/2026', texto: 'Verificar decurso do prazo sem impugnações', concluido: false },
+    ],
+  },
+  {
+    id: 'r034',
+    processo: '0024680-33.2025.8.28.0001',
+    data: '04/02/2026',
+    tipo: 'decisao_interlocutoria',
+    qtdAtos: 1,
+    nota: 'Saneamento: delimitados pontos controvertidos e deferida prova pericial.',
+    lembretes: [
+      { id: 'l023', data: '10/02/2026', texto: 'Intimar partes para indicar assistentes técnicos', concluido: true },
+      { id: 'l024', data: '27/02/2026', texto: 'Acompanhar nomeação do perito', concluido: false },
+    ],
+  },
+  {
+    id: 'r035',
+    processo: '0010101-22.2024.8.28.0001',
+    data: '03/02/2026',
+    tipo: 'calculo',
+    qtdAtos: 2,
+    nota: 'Atualização de cálculos com juros e correção monetária.',
+    lembretes: [
+      { id: 'l025', data: '06/02/2026', texto: 'Anexar memória de cálculo no processo', concluido: true },
+    ],
+  },
+  {
+    id: 'r036',
+    processo: '0010101-22.2024.8.28.0001',
+    data: '03/02/2026',
+    tipo: 'alvara',
+    qtdAtos: 1,
+    nota: 'Alvará complementar expedido para levantamento parcial.',
+    lembretes: [
+      { id: 'l026', data: '13/02/2026', texto: 'Confirmar liberação junto ao banco', concluido: false },
+    ],
+  },
+  {
+    id: 'r037',
+    processo: '0054321-09.2025.8.28.0001',
+    data: '02/02/2026',
+    tipo: 'peticao',
+    qtdAtos: 1,
+    nota: 'Petição de acordo anexada pelas partes.',
+    lembretes: [
+      { id: 'l027', data: '09/02/2026', texto: 'Verificar homologação do acordo', concluido: true },
+    ],
+  },
+  {
+    id: 'r038',
+    processo: '0054321-09.2025.8.28.0001',
+    data: '02/02/2026',
+    tipo: 'sentenca',
+    qtdAtos: 1,
+    nota: 'Sentença homologatória de acordo, com extinção do feito.',
+    lembretes: [
+      { id: 'l028', data: '16/02/2026', texto: 'Certificar trânsito em julgado (se não houver recurso)', concluido: false },
+    ],
+  },
+  {
+    id: 'r039',
+    processo: '0033331-40.2024.8.28.0001',
+    data: '01/02/2026',
+    tipo: 'carta_precatoria',
+    qtdAtos: 1,
+    nota: 'Carta precatória expedida para oitiva de testemunha em outra comarca.',
+    lembretes: [
+      { id: 'l029', data: '22/02/2026', texto: 'Acompanhar cumprimento da precatória', concluido: false },
+    ],
+  },
+  {
+    id: 'r040',
+    processo: '0033331-40.2024.8.28.0001',
+    data: '31/01/2026',
+    tipo: 'certidao',
+    qtdAtos: 1,
+    nota: 'Certidão: juntada de AR positivo e início de prazo para contestação.',
+    lembretes: [
+      { id: 'l030', data: '18/02/2026', texto: 'Verificar apresentação de contestação', concluido: false },
     ],
   },
 ];
