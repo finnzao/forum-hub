@@ -4,7 +4,7 @@ import { Cabecalho } from '../componentes/layout/Cabecalho';
 import { Rodape } from '../componentes/layout/Rodape';
 import { CartaoModulo } from '../componentes/cartoes/CartaoModulo';
 import { CartaoEstatistica } from '../componentes/cartoes/CartaoEstatistica';
-import { AtividadeServidor, ProcessoPrioritario } from '../componentes/perfis/AtividadeServidor';
+import { AtividadeServidor, ProcessoPrioritario } from '../../../perfis/AtividadeServidor';
 
 export default function PaginaMagistrado() {
   // Dados mockados - em produção viriam da API
