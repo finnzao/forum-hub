@@ -1,20 +1,22 @@
 {
   "name": "worker",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "PJE Download Worker — processa jobs de download via BullMQ",
+  "main": "dist/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "packageManager": "pnpm@10.28.2",
   "dependencies": {
-    "@types/node": "^20.19.31",
     "bullmq": "^5.67.2",
     "ioredis": "^5.9.2",
-    "ts-node": "^10.9.2",
+    "shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.31",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
 }
