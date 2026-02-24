@@ -48,6 +48,7 @@ import {
   obterProgresso,
   cancelarJob,
   enviar2FAJob,
+  ApiError,
 } from '../../componentes/pje-download/api';
 
 import { Cabecalho } from '../../componentes/layout/Cabecalho';
@@ -99,6 +100,60 @@ function IndicadorEtapas({ etapaAtual }: { etapaAtual: EtapaWizard }) {
 // ── Hook de logs de UI ───────────────────────────────────────
 
 let logIdCounter = 0;
+
+/**
+ * Extrai mensagem amigável de um erro, incluindo detalhes quando disponíveis
+ */
+function extrairMensagemErro(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 0) {
+      return `Servidor indisponível. Verifique se a API está em execução.`;
+    }
+    return err.message;
+  }
+
+  if (err instanceof TypeError && err.message === 'Failed to fetch') {
+    return 'Não foi possível conectar ao servidor. Verifique se a API está em execução.';
+  }
+
+  if (err instanceof Error) {
+    return err.message;
+  }
+
+  return 'Erro desconhecido.';
+}
+
+/**
+ * Extrai dados estruturados do erro para logging
+ */
+function extrairDadosErro(err: unknown): Record<string, unknown> {
+  if (err instanceof ApiError) {
+    return {
+      tipo: 'ApiError',
+      status: err.status,
+      mensagem: err.message,
+      dados: err.data,
+    };
+  }
+
+  if (err instanceof TypeError && err.message === 'Failed to fetch') {
+    return {
+      tipo: 'NetworkError',
+      mensagem: 'Servidor inacessível — verifique se a API backend está rodando',
+      causa: err.message,
+    };
+  }
+
+  if (err instanceof Error) {
+    return {
+      tipo: err.name,
+      mensagem: err.message,
+      stack: err.stack?.split('\n').slice(0, 3).join(' → '),
+    };
+  }
+
+  return { tipo: 'Unknown', valor: String(err) };
+}
 
 function useUiLogs() {
   const [logs, setLogs] = useState<EntradaLog[]>([]);
@@ -159,12 +214,18 @@ export default function PaginaDownloadPJE() {
     try {
       const result = await loginPJE({ cpf, password: senha });
 
+      // Após unwrapResponse(), result é o conteúdo de `data`:
+      // { needs2FA, user, profiles } — sem campo `success`
       if (result.needs2FA) {
         addLog('warn', 'AUTH', '2FA necessário — aguardando código via email');
         setCredenciais({ cpf, password: senha });
         setEtapa('2fa');
-      } else if (result.success && result.user) {
-        addLog('success', 'AUTH', `Login OK — ${result.user.nomeUsuario}`, result.user);
+      } else if (result.user) {
+        addLog('success', 'AUTH', `Login OK — ${result.user.nomeUsuario}`, {
+          usuario: result.user.nomeUsuario,
+          perfil: result.user.perfil,
+          localizacao: result.user.idUsuarioLocalizacaoMagistradoServidor,
+        });
         setSessao({
           autenticado: true,
           usuario: result.user,
@@ -174,19 +235,22 @@ export default function PaginaDownloadPJE() {
 
         if (result.profiles && result.profiles.length > 0) {
           setEtapa('perfil');
-          addLog('info', 'AUTH', `${result.profiles.length} perfis disponíveis`, result.profiles);
+          addLog('info', 'AUTH', `${result.profiles.length} perfis disponíveis`, 
+            result.profiles.map(p => ({ nome: p.nome, orgao: p.orgao, indice: p.indice }))
+          );
         } else {
           addLog('warn', 'AUTH', 'Nenhum perfil retornado — indo direto para download');
           setEtapa('download');
         }
       } else {
-        const msg = result.error || 'Falha na autenticação.';
-        addLog('error', 'AUTH', msg);
+        const msg = 'Falha na autenticação — resposta inesperada do servidor.';
+        addLog('error', 'AUTH', msg, { resposta: result });
         setErro(msg);
       }
     } catch (err: any) {
-      const msg = err.message || 'Erro de conexão.';
-      addLog('error', 'AUTH', msg, err);
+      const msg = extrairMensagemErro(err);
+      const dados = extrairDadosErro(err);
+      addLog('error', 'AUTH', msg, dados);
       setErro(msg);
     } finally {
       setCarregando(false);
@@ -203,7 +267,7 @@ export default function PaginaDownloadPJE() {
     try {
       const result = await enviar2FA('session', codigo);
 
-      if (result.success && result.user) {
+      if (result.user) {
         addLog('success', '2FA', `Verificado — ${result.user.nomeUsuario}`);
         setSessao({
           autenticado: true,
@@ -217,13 +281,14 @@ export default function PaginaDownloadPJE() {
           setEtapa('download');
         }
       } else {
-        const msg = result.error || 'Código inválido.';
-        addLog('error', '2FA', msg);
+        const msg = 'Código inválido ou resposta inesperada.';
+        addLog('error', '2FA', msg, { resposta: result });
         setErro(msg);
       }
     } catch (err: any) {
-      const msg = err.message || 'Erro ao verificar código.';
-      addLog('error', '2FA', msg, err);
+      const msg = extrairMensagemErro(err);
+      const dados = extrairDadosErro(err);
+      addLog('error', '2FA', msg, dados);
       setErro(msg);
     } finally {
       setCarregando(false);
@@ -235,16 +300,23 @@ export default function PaginaDownloadPJE() {
   const handleSelecionarPerfil = useCallback(async (perfil: PerfilPJE) => {
     setCarregando(true);
     setErro(null);
-    addLog('info', 'PERFIL', `Selecionando: "${perfil.nome}" (índice ${perfil.indice})`);
+    addLog('info', 'PERFIL', `Selecionando: "${perfil.nome}" (índice ${perfil.indice})`, {
+      nome: perfil.nome,
+      orgao: perfil.orgao,
+      indice: perfil.indice,
+      favorito: perfil.favorito,
+    });
 
     try {
       const result = await selecionarPerfil(perfil.indice);
 
-      if (result.success) {
+      // Após unwrapResponse(), result é { tasks, favoriteTasks, tags }
+      if (result.tasks) {
         addLog('success', 'PERFIL', `Perfil selecionado — ${result.tasks.length} tarefas, ${result.tags.length} etiquetas`, {
           tarefas: result.tasks.length,
           favoritas: result.favoriteTasks.length,
           etiquetas: result.tags.length,
+          listaTarefas: result.tasks.slice(0, 5).map(t => `${t.nome} (${t.quantidadePendente})`),
         });
 
         setSessao((prev) => ({
@@ -256,12 +328,13 @@ export default function PaginaDownloadPJE() {
         }));
         setEtapa('download');
       } else {
-        addLog('error', 'PERFIL', 'Falha ao selecionar perfil');
+        addLog('error', 'PERFIL', 'Falha ao selecionar perfil', { resposta: result });
         setErro('Falha ao selecionar perfil.');
       }
     } catch (err: any) {
-      const msg = err.message || 'Erro ao carregar perfil.';
-      addLog('error', 'PERFIL', msg, err);
+      const msg = extrairMensagemErro(err);
+      const dados = extrairDadosErro(err);
+      addLog('error', 'PERFIL', msg, dados);
       setErro(msg);
     } finally {
       setCarregando(false);
@@ -278,7 +351,14 @@ export default function PaginaDownloadPJE() {
 
     setCarregando(true);
     setErro(null);
-    addLog('info', 'JOB', `Criando job: modo=${params.mode}`, params);
+    addLog('info', 'JOB', `Criando job: modo=${params.mode}`, {
+      modo: params.mode,
+      tarefa: params.taskName,
+      etiqueta: params.tagName,
+      processos: params.processNumbers?.length,
+      tipoDocumento: params.documentType,
+      perfil: params.pjeProfileIndex,
+    });
 
     try {
       const novoJob = await criarJob({
@@ -286,13 +366,18 @@ export default function PaginaDownloadPJE() {
         credentials: credenciais,
       });
 
-      addLog('success', 'JOB', `Job criado: ${novoJob.id.slice(0, 8)}`, novoJob);
+      addLog('success', 'JOB', `Job criado: ${novoJob.id.slice(0, 8)}`, {
+        id: novoJob.id,
+        modo: novoJob.mode,
+        status: novoJob.status,
+      });
       setJobs((prev) => [novoJob, ...prev]);
       setJobExpandido(novoJob.id);
       setMostrarHistorico(true);
     } catch (err: any) {
-      const msg = err.message || 'Erro ao criar download.';
-      addLog('error', 'JOB', msg, err);
+      const msg = extrairMensagemErro(err);
+      const dados = extrairDadosErro(err);
+      addLog('error', 'JOB', msg, dados);
       setErro(msg);
     } finally {
       setCarregando(false);
@@ -306,7 +391,7 @@ export default function PaginaDownloadPJE() {
       const data = await listarJobs(20, 0);
       setJobs(data.jobs || []);
     } catch {
-      // Silencioso
+      // Silencioso — não interrompe o fluxo
     }
   }, []);
 
@@ -361,7 +446,8 @@ export default function PaginaDownloadPJE() {
       addLog('success', 'JOB', `Job ${jobId.slice(0, 8)} cancelado`);
       carregarJobs();
     } catch (err: any) {
-      addLog('error', 'JOB', `Falha ao cancelar: ${err.message}`);
+      const msg = extrairMensagemErro(err);
+      addLog('error', 'JOB', `Falha ao cancelar: ${msg}`, extrairDadosErro(err));
     }
   }, [addLog, carregarJobs]);
 

@@ -1,11 +1,6 @@
-// ============================================================
-// app/componentes/pje-download/PainelLogs.tsx
-// Painel de logs para desenvolvimento — exibe na interface
-// ============================================================
-
 'use client';
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Terminal, ChevronDown, ChevronUp, Trash2, Copy } from 'lucide-react';
 
 export interface EntradaLog {
@@ -22,12 +17,27 @@ interface PainelLogsProps {
   onLimpar: () => void;
 }
 
-const CORES_NIVEL: Record<EntradaLog['nivel'], { text: string; bg: string; dot: string }> = {
-  info:    { text: 'text-blue-700',    bg: 'bg-blue-50',    dot: 'bg-blue-500' },
-  warn:    { text: 'text-amber-700',   bg: 'bg-amber-50',   dot: 'bg-amber-500' },
-  error:   { text: 'text-red-700',     bg: 'bg-red-50',     dot: 'bg-red-500' },
-  success: { text: 'text-emerald-700', bg: 'bg-emerald-50', dot: 'bg-emerald-500' },
+const CORES_NIVEL: Record<EntradaLog['nivel'], { text: string; bg: string; dot: string; border: string }> = {
+  info: { text: 'text-blue-700', bg: 'bg-blue-50', dot: 'bg-blue-500', border: 'border-blue-200' },
+  warn: { text: 'text-amber-700', bg: 'bg-amber-50', dot: 'bg-amber-500', border: 'border-amber-200' },
+  error: { text: 'text-red-700', bg: 'bg-red-50', dot: 'bg-red-500', border: 'border-red-300' },
+  success: { text: 'text-emerald-700', bg: 'bg-emerald-50', dot: 'bg-emerald-500', border: 'border-emerald-200' },
 };
+
+/**
+ * Formata dados do log para exibição legível
+ */
+function formatarDados(dados: unknown): string {
+  if (dados === undefined || dados === null) return '';
+
+  if (typeof dados === 'string') return dados;
+
+  try {
+    return JSON.stringify(dados, null, 2);
+  } catch {
+    return String(dados);
+  }
+}
 
 export function PainelLogs({ logs, onLimpar }: PainelLogsProps) {
   const [expandido, setExpandido] = useState(false);
@@ -37,9 +47,12 @@ export function PainelLogs({ logs, onLimpar }: PainelLogsProps) {
     return null;
   }
 
+  const totalErros = logs.filter(l => l.nivel === 'error').length;
+  const totalAvisos = logs.filter(l => l.nivel === 'warn').length;
+
   const copiarLogs = () => {
     const texto = logs
-      .map((l) => `[${l.timestamp}] [${l.nivel.toUpperCase()}] [${l.modulo}] ${l.mensagem}${l.dados ? '\n  ' + JSON.stringify(l.dados, null, 2) : ''}`)
+      .map((l) => `[${l.timestamp}] [${l.nivel.toUpperCase()}] [${l.modulo}] ${l.mensagem}${l.dados ? '\n  ' + formatarDados(l.dados) : ''}`)
       .join('\n');
     navigator.clipboard.writeText(texto);
   };
@@ -56,8 +69,16 @@ export function PainelLogs({ logs, onLimpar }: PainelLogsProps) {
           <Terminal size={14} className="text-green-400" />
           <span className="font-bold text-green-400">PJE Debug</span>
           <span className="text-slate-500">({logs.length} entradas)</span>
-          {logs.some((l) => l.nivel === 'error') && (
-            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          {totalErros > 0 && (
+            <span className="flex items-center gap-1 px-1.5 py-0.5 bg-red-900/50 text-red-400 rounded">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+              {totalErros} erro{totalErros !== 1 ? 's' : ''}
+            </span>
+          )}
+          {totalAvisos > 0 && (
+            <span className="flex items-center gap-1 px-1.5 py-0.5 bg-amber-900/30 text-amber-400 rounded">
+              {totalAvisos} aviso{totalAvisos !== 1 ? 's' : ''}
+            </span>
           )}
         </div>
         {expandido ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -96,30 +117,49 @@ export function PainelLogs({ logs, onLimpar }: PainelLogsProps) {
               logs.map((entry) => {
                 const cores = CORES_NIVEL[entry.nivel];
                 const isExpanded = logExpandido === entry.id;
+                const isError = entry.nivel === 'error';
                 return (
                   <div
                     key={entry.id}
-                    className="border-b border-slate-800 last:border-b-0"
+                    className={`border-b last:border-b-0 ${isError
+                        ? 'border-red-900/50 bg-red-950/30'
+                        : 'border-slate-800'
+                      }`}
                   >
                     <button
                       type="button"
                       onClick={() => setLogExpandido(isExpanded ? null : entry.id)}
-                      className="w-full text-left px-4 py-1.5 flex items-start gap-2 hover:bg-slate-800/50 transition-colors"
+                      className={`w-full text-left px-4 py-1.5 flex items-start gap-2 transition-colors ${isError
+                          ? 'hover:bg-red-950/50'
+                          : 'hover:bg-slate-800/50'
+                        }`}
                     >
-                      <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${cores.dot}`} />
+                      <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${cores.dot} ${isError ? 'animate-pulse' : ''
+                        }`} />
                       <span className="text-slate-500 flex-shrink-0 w-20">{entry.timestamp}</span>
                       <span className={`flex-shrink-0 w-14 font-bold ${cores.text}`}>
                         [{entry.modulo}]
                       </span>
-                      <span className="text-slate-300 truncate">{entry.mensagem}</span>
+                      <span className={`truncate ${isError ? 'text-red-300 font-semibold' : 'text-slate-300'}`}>
+                        {entry.mensagem}
+                      </span>
                       {entry.dados !== undefined && (
-                        <span className="text-slate-600 flex-shrink-0">▸</span>
+                        <span className="text-slate-600 flex-shrink-0">
+                          {isExpanded ? '▾' : '▸'}
+                        </span>
                       )}
                     </button>
                     {isExpanded && entry.dados !== undefined && (
-                      <pre className="px-4 py-2 bg-slate-950 text-green-300 overflow-x-auto text-[10px] leading-relaxed whitespace-pre-wrap">
-                        {JSON.stringify(entry.dados, null, 2)}
-                      </pre>
+                      <div className={`px-4 py-2 overflow-x-auto text-[10px] leading-relaxed whitespace-pre-wrap ${isError
+                          ? 'bg-red-950/50 text-red-300 border-t border-red-900/30'
+                          : 'bg-slate-950 text-green-300'
+                        }`}>
+                        {typeof entry.dados === 'string' ? (
+                          <p>{entry.dados}</p>
+                        ) : (
+                          <pre>{formatarDados(entry.dados)}</pre>
+                        )}
+                      </div>
                     )}
                   </div>
                 );

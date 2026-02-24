@@ -1,5 +1,4 @@
-import React from 'react';
-import { Users, ClipboardList, BarChart3, Eye, TrendingUp, AlertTriangle } from 'lucide-react';
+import { Users, ClipboardList, BarChart3, Eye, TrendingUp, AlertTriangle, Download } from 'lucide-react';
 import { Cabecalho } from '../componentes/layout/Cabecalho';
 import { Rodape } from '../componentes/layout/Rodape';
 import { CartaoModulo } from '../componentes/cartoes/CartaoModulo';
@@ -87,7 +86,7 @@ export default function PaginaMagistrado() {
           <h3 className="text-lg font-bold text-slate-900 mb-6 uppercase tracking-wide">
             Módulos do Sistema
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
             <CartaoModulo
               icone={<ClipboardList size={28} strokeWidth={2} />}
               titulo="Atribuição de Tarefas"
@@ -120,6 +119,12 @@ export default function PaginaMagistrado() {
                 valor: 156,
                 variante: 'padrao',
               }}
+            />
+            <CartaoModulo
+              icone={<Download size={28} strokeWidth={2} />}
+              titulo="Download PJE"
+              descricao="Baixe processos do PJE por tarefa, etiqueta ou número. Downloads em lote com acompanhamento."
+              href="/magistrado/pje-download"
             />
           </div>
         </div>

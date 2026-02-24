@@ -1,9 +1,3 @@
-// ============================================================
-// app/componentes/pje-download/logger.ts
-// Logger de desenvolvimento para debug do fluxo PJE
-// Ativo apenas quando NEXT_PUBLIC_PJE_DEBUG=true ou NODE_ENV=development
-// ============================================================
-
 const IS_DEV =
   typeof window !== 'undefined' &&
   (process.env.NEXT_PUBLIC_PJE_DEBUG === 'true' ||
@@ -36,15 +30,54 @@ function timestamp(): string {
   });
 }
 
+/**
+ * Serializa dados para exibição no console, tratando objetos vazios,
+ * erros e valores não-serializáveis de forma legível.
+ */
+function serializeDados(dados: unknown): unknown {
+  if (dados === undefined || dados === null) return dados;
+
+  // Se for um Error, extrair informações úteis
+  if (dados instanceof Error) {
+    return {
+      tipo: dados.name,
+      mensagem: dados.message,
+      stack: dados.stack?.split('\n').slice(0, 5).join('\n'),
+      ...(dados as any).status !== undefined ? { status: (dados as any).status } : {},
+      ...(dados as any).data !== undefined ? { data: (dados as any).data } : {},
+    };
+  }
+
+  // Se for um objeto vazio, indicar explicitamente
+  if (typeof dados === 'object' && dados !== null && Object.keys(dados).length === 0) {
+    return '(objeto vazio — sem detalhes adicionais)';
+  }
+
+  return dados;
+}
+
 function log(level: LogLevel, modulo: string, mensagem: string, dados?: unknown): void {
   if (!IS_DEV) return;
 
   const ts = timestamp();
   const prefix = `%c[PJE ${ts}] ${ICONES[level]} [${modulo}]`;
+  const serializedDados = serializeDados(dados);
 
-  if (dados !== undefined) {
+  if (level === 'error') {
+    // Erros sempre expandidos para maior visibilidade
+    console.group(`${prefix} ${mensagem}`, CORES[level]);
+    if (serializedDados !== undefined) {
+      if (typeof serializedDados === 'string') {
+        console.log(`%c${serializedDados}`, 'color:#dc2626');
+      } else {
+        console.log(serializedDados);
+      }
+    }
+    console.trace('Stack trace');
+    console.groupEnd();
+  } else if (serializedDados !== undefined) {
     console.groupCollapsed(`${prefix} ${mensagem}`, CORES[level]);
-    console.log(dados);
+    console.log(serializedDados);
     console.groupEnd();
   } else {
     console.log(`${prefix} ${mensagem}`, CORES[level]);
@@ -60,7 +93,7 @@ export const logger = {
   warn: (modulo: string, mensagem: string, dados?: unknown) =>
     log('warn', modulo, mensagem, dados),
 
-  /** Erros */
+  /** Erros — sempre expandidos no console para visibilidade */
   error: (modulo: string, mensagem: string, dados?: unknown) =>
     log('error', modulo, mensagem, dados),
 
@@ -80,7 +113,7 @@ export const logger = {
     console.groupEnd();
   },
 
-  /** Mede tempo de uma operação async */
+  /** Mede tempo de uma operação async com logs detalhados de erro */
   async time<T>(modulo: string, label: string, fn: () => Promise<T>): Promise<T> {
     if (!IS_DEV) return fn();
     const inicio = performance.now();
@@ -92,7 +125,18 @@ export const logger = {
       return resultado;
     } catch (err) {
       const duracao = (performance.now() - inicio).toFixed(0);
-      log('error', modulo, `⏱ Falhou: ${label} (${duracao}ms)`, err);
+
+      // Mensagem de erro mais descritiva
+      let errMsg: string;
+      if (err instanceof TypeError && err.message === 'Failed to fetch') {
+        errMsg = `Falha de rede — servidor inacessível`;
+      } else if (err instanceof Error) {
+        errMsg = err.message;
+      } else {
+        errMsg = String(err);
+      }
+
+      log('error', modulo, `⏱ Falhou: ${label} — ${errMsg} (${duracao}ms)`, err);
       throw err;
     }
   },

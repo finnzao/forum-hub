@@ -30,10 +30,52 @@ function getAuthHeaders(userId: number, name: string, role: string): Record<stri
 // TODO: Em produção, obter do contexto de autenticação
 const CURRENT_USER = { id: 1, name: 'Dr. João Magistrado', role: 'magistrado' };
 
+/**
+ * Formata detalhes do erro para exibição nos logs
+ */
+function formatErrorDetails(err: unknown): { message: string; details: Record<string, unknown> } {
+  if (err instanceof TypeError && err.message === 'Failed to fetch') {
+    return {
+      message: `Servidor indisponível (${API_BASE}). Verifique se a API está em execução.`,
+      details: {
+        tipo: 'NETWORK_ERROR',
+        causa: 'Failed to fetch — não foi possível conectar ao servidor',
+        url: API_BASE,
+        dica: 'Verifique se o servidor da API está rodando e acessível',
+      },
+    };
+  }
+
+  if (err instanceof DOMException && err.name === 'AbortError') {
+    return {
+      message: 'Requisição cancelada por timeout.',
+      details: { tipo: 'TIMEOUT', causa: err.message },
+    };
+  }
+
+  if (err instanceof Error) {
+    return {
+      message: err.message,
+      details: {
+        tipo: err.name,
+        causa: err.message,
+        stack: err.stack?.split('\n').slice(0, 3).join(' → '),
+      },
+    };
+  }
+
+  return {
+    message: String(err),
+    details: { tipo: 'UNKNOWN', valor: err },
+  };
+}
+
 async function apiRequest<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}/api/pje/downloads${path}`;
+  const method = options.method || 'GET';
+  const inicio = performance.now();
 
-  logger.debug(MOD, `${options.method || 'GET'} ${path}`, {
+  logger.debug(MOD, `→ ${method} ${path}`, {
     url,
     body: options.body ? JSON.parse(options.body as string) : undefined,
   });
@@ -43,18 +85,62 @@ async function apiRequest<T = unknown>(path: string, options: RequestInit = {}):
     ...(options.headers as Record<string, string>),
   };
 
-  const res = await fetch(url, { ...options, headers });
+  let res: Response;
+
+  try {
+    res = await fetch(url, { ...options, headers });
+  } catch (err) {
+    const duracao = (performance.now() - inicio).toFixed(0);
+    const { message, details } = formatErrorDetails(err);
+
+    logger.error(MOD, `✗ ${method} ${path} — ${message} (${duracao}ms)`, details);
+
+    throw new ApiError(message, 0, details);
+  }
+
+  const duracao = (performance.now() - inicio).toFixed(0);
 
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    const errMsg = data.error || `HTTP ${res.status}`;
-    logger.error(MOD, `Resposta ${res.status} para ${path}`, data);
-    throw new Error(errMsg);
+    let data: Record<string, unknown> = {};
+    let bodyText = '';
+
+    try {
+      bodyText = await res.text();
+      data = JSON.parse(bodyText);
+    } catch {
+      data = { rawBody: bodyText || '(corpo vazio)' };
+    }
+
+    const errMsg = (data.error as string) || `HTTP ${res.status} ${res.statusText}`;
+
+    logger.error(MOD, `✗ ${method} ${path} → ${res.status} ${res.statusText} (${duracao}ms)`, {
+      status: res.status,
+      statusText: res.statusText,
+      url,
+      resposta: data,
+      headers: Object.fromEntries(res.headers.entries()),
+    });
+
+    throw new ApiError(errMsg, res.status, data);
   }
 
   const data = await res.json();
-  logger.debug(MOD, `Resposta OK para ${path}`, data);
+  logger.debug(MOD, `✓ ${method} ${path} → ${res.status} (${duracao}ms)`, data);
   return data as T;
+}
+
+/**
+ * Erro tipado da API com status HTTP e dados da resposta
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public data: Record<string, unknown> = {}
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
 }
 
 // ── Autenticação PJE (proxy via API backend) ─────────────────
@@ -65,11 +151,9 @@ export interface LoginParams {
 }
 
 export interface LoginResult {
-  success: boolean;
   needs2FA: boolean;
   user?: UsuarioPJE;
   profiles?: PerfilPJE[];
-  error?: string;
 }
 
 export async function loginPJE(params: LoginParams): Promise<LoginResult> {
@@ -91,7 +175,6 @@ export async function enviar2FA(jobIdOuSessionId: string, code: string): Promise
 }
 
 export async function selecionarPerfil(indicePerfil: number): Promise<{
-  success: boolean;
   tasks: TarefaPJE[];
   favoriteTasks: TarefaPJE[];
   tags: EtiquetaPJE[];

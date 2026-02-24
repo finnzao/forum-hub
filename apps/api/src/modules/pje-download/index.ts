@@ -1,35 +1,35 @@
 // ============================================================
 // apps/api/src/modules/pje-download/index.ts
-// Module — registra rotas e inicializa dependências
+// Module — registra rotas PJE Download (modo in-memory)
+// Sem Redis, sem PostgreSQL. Ideal para desenvolvimento/testes.
 // ============================================================
 
 import type { FastifyInstance } from 'fastify';
-import type { Pool } from 'pg';
-import type { Redis } from 'ioredis';
-import { PJEDownloadRepository } from './repositories/pje-download.repository';
+import { PJEDownloadRepositoryMemory } from './repositories/pje-download.repository.memory';
 import { PJEDownloadService } from './services/pje-download.service';
 import { pjeDownloadRoutes } from './controllers/pje-download.controller';
 
-interface PJEDownloadModuleOptions {
-  pool: Pool;
-  redis: Redis;
-  redisConnection: { host: string; port: number; password?: string };
-}
+export async function registerPJEDownloadModule(fastify: FastifyInstance) {
+  // Repositório in-memory (dados perdidos ao reiniciar)
+  const repository = new PJEDownloadRepositoryMemory();
 
-export async function registerPJEDownloadModule(
-  fastify: FastifyInstance,
-  options: PJEDownloadModuleOptions
-) {
-  const repository = new PJEDownloadRepository(options.pool);
-  const service = new PJEDownloadService(
-    repository,
-    options.redis,
-    options.redisConnection
-  );
+  // Service sem Redis — 2FA, progresso e cancelamento em memória
+  const service = new PJEDownloadService(repository);
 
+  // Registrar rotas
   await fastify.register(pjeDownloadRoutes(service), {
     prefix: '/api/pje/downloads',
   });
 
-  fastify.log.info('Módulo PJE Download registrado em /api/pje/downloads');
+  // Limpeza periódica para evitar memory leak (a cada 10 minutos)
+  const cleanupInterval = setInterval(() => {
+    service.cleanup();
+  }, 10 * 60 * 1000);
+
+  // Limpar interval quando o server fechar
+  fastify.addHook('onClose', () => {
+    clearInterval(cleanupInterval);
+  });
+
+  fastify.log.info('✅ Módulo PJE Download registrado em /api/pje/downloads (storage: memory)');
 }

@@ -1,4 +1,5 @@
 // ============================================================
+// apps/api/src/modules/pje-download/repositories/pje-download.repository.memory.ts
 // Repositório IN-MEMORY — substitui o PostgreSQL
 // Os dados vivem apenas enquanto o servidor está rodando.
 // ============================================================
@@ -29,36 +30,21 @@ interface StoredJob {
   completedAt?: Date;
 }
 
-interface CreateJobParams {
-  id: string;
-  userId: number;
-  mode: PJEDownloadMode;
-  params: Record<string, unknown>;
-}
-
-interface UpdateJobParams {
-  id: string;
-  status?: PJEJobStatus;
-  progress?: number;
-  totalProcesses?: number;
-  successCount?: number;
-  failureCount?: number;
-  files?: PJEDownloadedFile[];
-  errors?: PJEDownloadError[];
-  startedAt?: Date;
-  completedAt?: Date;
-}
-
 export class PJEDownloadRepositoryMemory {
   private jobs = new Map<string, StoredJob>();
   private audit = new Map<string, any[]>();
 
-  async createJob(params: CreateJobParams): Promise<DownloadJobResponse> {
+  async createJob(params: {
+    id: string;
+    userId: number;
+    mode: string;
+    params: Record<string, unknown>;
+  }): Promise<DownloadJobResponse> {
     const now = new Date();
     const job: StoredJob = {
       id: params.id,
       userId: params.userId,
-      mode: params.mode,
+      mode: params.mode as PJEDownloadMode,
       params: params.params,
       status: 'pending',
       progress: 0,
@@ -94,7 +80,18 @@ export class PJEDownloadRepositoryMemory {
     };
   }
 
-  async updateJob(params: UpdateJobParams): Promise<void> {
+  async updateJob(params: {
+    id: string;
+    status?: PJEJobStatus;
+    progress?: number;
+    totalProcesses?: number;
+    successCount?: number;
+    failureCount?: number;
+    files?: PJEDownloadedFile[];
+    errors?: PJEDownloadError[];
+    startedAt?: Date;
+    completedAt?: Date;
+  }): Promise<void> {
     const job = this.jobs.get(params.id);
     if (!job) return;
 
@@ -123,6 +120,18 @@ export class PJEDownloadRepositoryMemory {
 
   async findAuditByJob(jobId: string) {
     return this.audit.get(jobId) ?? [];
+  }
+
+  // Estatísticas para o health check
+  getStats() {
+    const jobs = [...this.jobs.values()];
+    return {
+      totalJobs: jobs.length,
+      byStatus: jobs.reduce((acc, j) => {
+        acc[j.status] = (acc[j.status] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>),
+    };
   }
 
   private toResponse(job: StoredJob): DownloadJobResponse {
