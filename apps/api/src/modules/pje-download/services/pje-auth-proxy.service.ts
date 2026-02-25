@@ -332,134 +332,84 @@ export class PJEAuthProxy {
       const html = page.body;
       const profiles: Array<{ indice: number; nome: string; orgao: string; favorito: boolean }> = [];
 
-      // Log para debug: tamanho do HTML e primeiros IDs encontrados
-      const allDtPerfilMatches = html.match(/papeisUsuarioForm:dtPerfil:\d+/g) || [];
-      console.log(`[PJE-AUTH] dev.seam HTML: ${html.length} chars, dtPerfil refs: ${allDtPerfilMatches.length}`);
+      console.log(`[PJE-AUTH] dev.seam HTML: ${html.length} chars`);
 
-      // ─── Estratégia 1: Encontrar cada bloco de perfil individualmente ───
-      //
-      // A estrutura do PJE é tipicamente:
-      //   <tr class="...">
-      //     <td>  (estrela favorito ou vazio)  </td>
-      //     <td>  TEXTO DO PERFIL  </td>
-      //     <td>  <a id="...dtPerfil:N:j_id70">Selecionar</a>  </td>
-      //   </tr>
-      //
-      // Mas também pode ser tudo numa única <td> ou com layouts diferentes.
-      // Abordagem: encontrar cada j_id70 (botão Selecionar) e extrair texto da mesma <tr>
+      // ─── Estratégia principal: Encontrar tbody da tabela de perfis ───
+      // e iterar cada <tr> em ordem
+      const tbodyMatch = html.match(
+        /<tbody[^>]*id="papeisUsuarioForm:dtPerfil:tb"[^>]*>([\s\S]*?)<\/tbody>/i
+      );
 
-      // Encontrar todos os índices de perfil únicos
-      const indexSet = new Set<number>();
-      const indexRegex = /papeisUsuarioForm:dtPerfil:(\d+)/g;
-      let idxMatch;
-      while ((idxMatch = indexRegex.exec(html)) !== null) {
-        indexSet.add(parseInt(idxMatch[1], 10));
-      }
-      const allIndices = [...indexSet].sort((a, b) => a - b);
+      if (tbodyMatch) {
+        const tbodyHtml = tbodyMatch[1];
 
-      console.log(`[PJE-AUTH] Índices de perfil encontrados: ${allIndices.join(', ')}`);
+        // Separar as <tr> — cada uma é um perfil
+        // Usar split ao invés de regex para evitar problemas com greedy matching
+        const rows = tbodyHtml.split(/<tr[^>]*>/i).slice(1); // primeiro split é antes do primeiro <tr>
 
-      // Para cada índice, extrair o contexto ao redor e buscar o texto
-      for (const idx of allIndices) {
-        // Encontrar a <tr> que contém este índice
-        // Regex: buscar a <tr> mais próxima que contém "dtPerfil:N"
-        const trPattern = new RegExp(
-          `<tr[^>]*>([\\s\\S]*?papeisUsuarioForm:dtPerfil:${idx}[\\s\\S]*?)<\\/tr>`,
-          'i'
-        );
-        const trMatch = html.match(trPattern);
+        for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+          const rowHtml = rows[rowIdx].split('</tr>')[0] || rows[rowIdx];
 
-        let nome = '';
-        let isFavorito = false;
+          // Extrair o índice real do perfil a partir do link dtPerfil:N:j_id70
+          // IMPORTANTE: usar `:j_id` como boundary para evitar confundir dtPerfil:1 com dtPerfil:10
+          const idxMatch = rowHtml.match(/dtPerfil:(\d+):j_id/);
+          const idx = idxMatch ? parseInt(idxMatch[1], 10) : rowIdx;
 
-        if (trMatch) {
-          const rowHtml = trMatch[1];
-
-          // Verificar se é favorito
-          isFavorito = rowHtml.includes('j_id66') ||
+          // Verificar se é favorito (estrela preenchida)
+          const isFavorito = rowHtml.includes('j_id66') ||
             rowHtml.includes('ui-icon-star') ||
             rowHtml.includes('star-filled') ||
-            /favorit/i.test(rowHtml);
+            /class="[^"]*favorit/i.test(rowHtml);
 
-          // Extrair todas as <td>
+          // Extrair todas as <td> e seus textos
           const tds: string[] = [];
           const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
           let tdMatch;
           while ((tdMatch = tdRegex.exec(rowHtml)) !== null) {
             const text = this.decodeHtmlEntities(this.stripHtml(tdMatch[1]).trim());
-            // Ignorar células com apenas ícones ou botões (< 3 chars ou "Selecionar")
+            // Ignorar células vazias, ícones ou botões
             if (text.length > 3 && !/^selecionar$/i.test(text)) {
               tds.push(text);
             }
           }
 
-          // O nome do perfil é o texto mais longo entre as <td>
+          // O nome do perfil é o texto mais longo
+          let nome = '';
           if (tds.length > 0) {
             nome = tds.sort((a, b) => b.length - a.length)[0];
           }
-        }
 
-        // Se não encontrou pela <tr>, tentar pelo texto perto do link
-        if (!nome) {
-          // Buscar texto no bloco ao redor do dtPerfil:N
+          if (!nome) nome = `Perfil ${idx}`;
+
+          profiles.push({ indice: idx, nome, orgao: '', favorito: isFavorito });
+        }
+      }
+
+      // ─── Fallback: buscar links dtPerfil:N:j_id70 individualmente ───
+      if (profiles.length === 0) {
+        // Encontrar todos os índices únicos usando o boundary :j_id
+        const indexSet = new Set<number>();
+        const indexRegex = /papeisUsuarioForm:dtPerfil:(\d+):j_id/g;
+        let idxMatch;
+        while ((idxMatch = indexRegex.exec(html)) !== null) {
+          indexSet.add(parseInt(idxMatch[1], 10));
+        }
+        const allIndices = [...indexSet].sort((a, b) => a - b);
+
+        console.log(`[PJE-AUTH] Fallback: índices encontrados: ${allIndices.join(', ')}`);
+
+        for (const idx of allIndices) {
+          // Buscar <td> imediatamente antes do link dtPerfil:N:j_id70
           const contextPattern = new RegExp(
-            `(?:<td[^>]*>([\\s\\S]{5,300}?)<\\/td>[\\s\\S]{0,200}?)?papeisUsuarioForm:dtPerfil:${idx}:j_id70`,
+            `<td[^>]*>([\\s\\S]{5,400}?)<\\/td>[\\s\\S]{0,300}?papeisUsuarioForm:dtPerfil:${idx}:j_id70`,
             'i'
           );
           const ctxMatch = html.match(contextPattern);
-          if (ctxMatch?.[1]) {
-            nome = this.decodeHtmlEntities(this.stripHtml(ctxMatch[1]).trim());
-          }
-        }
+          let nome = ctxMatch?.[1]
+            ? this.decodeHtmlEntities(this.stripHtml(ctxMatch[1]).trim())
+            : `Perfil ${idx}`;
 
-        // Fallback: usar "Perfil N"
-        if (!nome) nome = `Perfil ${idx}`;
-
-        profiles.push({
-          indice: idx,
-          nome,
-          orgao: '', // Será parseado do nome se tiver " / "
-          favorito: isFavorito,
-        });
-      }
-
-      // ─── Estratégia 2: Se Estratégia 1 não achou nada, usar tbody ───
-      if (profiles.length === 0) {
-        const tbodyMatch = html.match(
-          /<tbody[^>]*id="papeisUsuarioForm:dtPerfil:tb"[^>]*>([\s\S]*?)<\/tbody>/i
-        );
-
-        if (tbodyMatch) {
-          const tbodyHtml = tbodyMatch[1];
-          const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-          let trMatch;
-          let rowIndex = 0;
-
-          while ((trMatch = trRegex.exec(tbodyHtml)) !== null) {
-            const rowHtml = trMatch[1];
-            const tds: string[] = [];
-            const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-            let tdMatch;
-            while ((tdMatch = tdRegex.exec(rowHtml)) !== null) {
-              const text = this.decodeHtmlEntities(this.stripHtml(tdMatch[1]).trim());
-              if (text.length > 3) tds.push(text);
-            }
-
-            const realIdx = (() => {
-              const m = rowHtml.match(/dtPerfil:(\d+)/);
-              return m ? parseInt(m[1], 10) : rowIndex;
-            })();
-
-            if (tds.length > 0) {
-              profiles.push({
-                indice: realIdx,
-                nome: tds.sort((a, b) => b.length - a.length)[0],
-                orgao: '',
-                favorito: rowHtml.includes('j_id66'),
-              });
-            }
-            rowIndex++;
-          }
+          profiles.push({ indice: idx, nome, orgao: '', favorito: false });
         }
       }
 
@@ -467,15 +417,12 @@ export class PJEAuthProxy {
       for (const p of profiles) {
         const parts = p.nome.split(' / ');
         if (parts.length >= 2) {
-          // Primeiro segmento é a vara/orgão, resto é o cargo
           p.orgao = parts[0].trim();
-          // Manter o nome completo como está (não truncar)
         }
       }
 
       // Marcar favorito pelo link j_id66 (perfil padrão/ativo)
       if (html.includes('dtPerfil:j_id66') && !profiles.some(p => p.favorito)) {
-        // j_id66 é o link "Desfazer favorito" — o perfil no topo da lista geralmente
         if (profiles.length > 0) profiles[0].favorito = true;
       }
 

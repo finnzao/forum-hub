@@ -1,8 +1,3 @@
-// ============================================================
-// apps/api/src/server.ts
-// Entry point — Fastify com PJE Download (sem Redis/PostgreSQL)
-// ============================================================
-
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { registerPJEDownloadModule } from './modules/pje-download';
