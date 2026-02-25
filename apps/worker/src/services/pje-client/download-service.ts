@@ -2,14 +2,10 @@
 // apps/worker/src/services/pje-client/download-service.ts
 // Download Service — gera chaves, solicita e baixa PDFs
 //
-// Correções v7:
-//  - situacaoDownload: aceita 'S' (valor real da API) além de 'DISPONIVEL'
-//  - idUsuario no recuperarDownloadsDisponiveis usa session.idUsuario
-//    (que corresponde ao campo idUsuario do currentUser, NÃO 
-//    idUsuarioLocalizacaoMagistradoServidor — confirmado via HAR)
-//  - Extração do botão de download mais robusta
+// Correções v8:
+//  - Usa session.idUsuario (string) para recuperarDownloadsDisponiveis
+//  - situacaoDownload: aceita 'S' além de 'DISPONIVEL'
 //  - Polling com backoff progressivo
-//  - Suporte a resposta HTML completa (não apenas snippet AJAX)
 // ============================================================
 
 import { writeFile, mkdir } from 'node:fs/promises';
@@ -17,7 +13,6 @@ import { join } from 'node:path';
 import { PJEHttpClient } from './http-client';
 import { config } from '../../config';
 
-// Status que indicam download disponível na API do PJE
 const DOWNLOAD_AVAILABLE_STATUSES = ['S', 'DISPONIVEL', 'AVAILABLE'];
 
 export interface DownloadRequest {
@@ -104,21 +99,17 @@ export class DownloadService {
         body
       );
 
-      // Caso A: URL S3 imediata
       const s3Url = this.extractS3Url(responseHtml);
       if (s3Url) {
         return await this.downloadFromUrl(s3Url, numeroProcesso, outputDir);
       }
 
-      // Caso B/C: Download na fila — polling
       if (
         responseHtml.includes('será disponibilizado') ||
         responseHtml.includes('será gerado') ||
         responseHtml.includes('está sendo gerado') ||
         responseHtml.includes('Área de download') ||
-        // window.open('') com URL vazia = download assíncrono
         /window\.open\(''\)/.test(responseHtml) ||
-        // Resposta HTML muito grande = página completa com mensagem de fila
         responseHtml.length > 5000
       ) {
         return await this.pollForDownload(idProcesso, numeroProcesso, outputDir);
@@ -144,8 +135,6 @@ export class DownloadService {
 
   async listAvailableDownloads(idUsuario: string): Promise<AvailableDownload[]> {
     try {
-      // NOTA CRÍTICA (v7): o endpoint espera o campo idUsuario do currentUser
-      // (ex: 14552753), NÃO idUsuarioLocalizacaoMagistradoServidor (ex: 1463158)
       const result = await this.http.apiGet<{ downloadsDisponiveis: AvailableDownload[] }>(
         `pjedocs-api/v1/downloadService/recuperarDownloadsDisponiveis?idUsuario=${idUsuario}&sistemaOrigem=PRIMEIRA_INSTANCIA`
       );
@@ -166,8 +155,6 @@ export class DownloadService {
     }
   }
 
-  // ── Polling para downloads assíncronos ─────────────────
-
   private async pollForDownload(
     idProcesso: number,
     numeroProcesso: string,
@@ -178,7 +165,6 @@ export class DownloadService {
     const startTime = Date.now();
     const digitsOnly = numeroProcesso.replace(/\D/g, '');
 
-    // Aguardar um tempo inicial antes do primeiro poll
     await sleep(5000);
 
     let pollCount = 0;
@@ -189,15 +175,13 @@ export class DownloadService {
       const session = this.http.getSession();
       if (!session) break;
 
-      // Usar idUsuario (NÃO idUsuarioLocalizacao) como parâmetro idUsuario
-      const downloads = await this.listAvailableDownloads(session.idUsuario || session.idUsuarioLocalizacao);
+      const userId = String(session.idUsuario || session.idUsuarioLocalizacao);
+      const downloads = await this.listAvailableDownloads(userId);
 
       const match = downloads.find((d) => {
-        // Verificar status — PJE usa 'S' para disponível
         const status = (d.situacaoDownload || '').toUpperCase();
         if (!DOWNLOAD_AVAILABLE_STATUSES.includes(status)) return false;
 
-        // Match por itens
         const matchByItem = d.itens?.some(
           (item) =>
             item.idProcesso === idProcesso ||
@@ -205,7 +189,6 @@ export class DownloadService {
         );
         if (matchByItem) return true;
 
-        // Match pelo nome do arquivo (contém dígitos do processo)
         const fileDigits = d.nomeArquivo.replace(/\D/g, '');
         return fileDigits.includes(digitsOnly);
       });
@@ -217,7 +200,6 @@ export class DownloadService {
         }
       }
 
-      // Backoff progressivo: 10s, 12.5s, 15s, ..., max 30s
       const delay = Math.min(baseInterval + (pollCount * 2500), 30000);
       await sleep(delay);
     }
@@ -227,8 +209,6 @@ export class DownloadService {
       error: `Timeout aguardando download do processo ${numeroProcesso} (${timeout / 1000}s).`,
     };
   }
-
-  // ── Download de arquivo ────────────────────────────────
 
   private async downloadFromUrl(
     url: string,
@@ -257,15 +237,12 @@ export class DownloadService {
     }
   }
 
-  // ── Helpers ────────────────────────────────────────────
-
   private extractViewState(html: string): string | null {
     const match = html.match(/javax\.faces\.ViewState[^>]+value="([^"]+)"/);
     return match?.[1] || null;
   }
 
   private extractDownloadButton(html: string): string | null {
-    // Estratégia 1: buscar botão com texto "Download" e ID navbar:j_idN
     const specificPatterns = [
       /id="(navbar:j_id\d+)"[^>]*value="Download"/i,
       /value="Download"[^>]*id="(navbar:j_id\d+)"/i,
@@ -278,7 +255,6 @@ export class DownloadService {
       if (match?.[1]) return match[1];
     }
 
-    // Estratégia 2: todos os navbar:j_idN com contexto de download
     const allBtns: string[] = [];
     const regex = /(navbar:j_id\d+)/g;
     let match;
@@ -288,7 +264,6 @@ export class DownloadService {
       }
     }
 
-    // Filtrar por contexto
     const withDownloadContext = allBtns.filter(id => {
       const pos = html.indexOf(id);
       const context = html.substring(Math.max(0, pos - 200), Math.min(html.length, pos + 500));
@@ -299,7 +274,6 @@ export class DownloadService {
       return withDownloadContext[withDownloadContext.length - 1];
     }
 
-    // Fallback: último navbar:j_idN
     return allBtns.length > 0 ? allBtns[allBtns.length - 1] : null;
   }
 

@@ -1,6 +1,11 @@
 // ============================================================
 // apps/worker/src/services/pje-client/task-service.ts
 // Task Service — tarefas e processos do painel PJE
+//
+// Correções v8:
+//  - Paginação usa offset correto (0, 500, 1000...)
+//  - getAllTaskProcesses retorna processos sem duplicatas
+//  - Log de progresso durante paginação
 // ============================================================
 
 import { PJEHttpClient } from './http-client';
@@ -100,25 +105,73 @@ export class TaskService {
     });
   }
 
+  /**
+   * CORREÇÃO v8: Paginação robusta para listas > 500 processos.
+   *
+   * A API PJE espera "page" como offset (0, 500, 1000...).
+   * Usa Set para evitar duplicatas por idProcesso.
+   * Limite de segurança de 10000 processos.
+   *
+   * @param taskName - Nome da tarefa
+   * @param isFavorite - false = "Todas as Tarefas", true = "Minhas Tarefas"
+   */
   async *getAllTaskProcesses(
     taskName: string,
     isFavorite: boolean
   ): AsyncGenerator<PJEProcess[], void, unknown> {
     const pageSize = config.pje.defaultPageSize;
+    const MAX_TOTAL = 10000; // Limite de segurança
     let offset = 0;
     let total: number | null = null;
+    const seenIds = new Set<number>();
+    let pageNum = 0;
 
-    while (total === null || offset < total) {
+    const tipoLista = isFavorite ? 'favoritas' : 'todas';
+
+    while (total === null || offset < Math.min(total, MAX_TOTAL)) {
+      pageNum++;
       const result = await this.listTaskProcesses(taskName, isFavorite, offset, pageSize);
-      total = result.count;
 
-      if (result.entities.length === 0) break;
+      if (total === null) {
+        total = result.count;
+        console.log(`[TASK-SVC] Tarefa "${taskName}" (${tipoLista}): total reportado = ${total}`);
+      }
 
-      yield result.entities;
+      if (result.entities.length === 0) {
+        console.log(`[TASK-SVC] Tarefa "${taskName}" (${tipoLista}): página ${pageNum} vazia, encerrando`);
+        break;
+      }
+
+      // Filtrar duplicatas
+      const novos = result.entities.filter((p) => {
+        if (seenIds.has(p.idProcesso)) return false;
+        seenIds.add(p.idProcesso);
+        return true;
+      });
+
+      console.log(`[TASK-SVC] Tarefa "${taskName}" (${tipoLista}): página ${pageNum} (offset=${offset}) → ${result.entities.length} retornados, ${novos.length} novos, total coletado: ${seenIds.size}`);
+
+      if (novos.length > 0) {
+        yield novos;
+      }
+
+      // Se não houve novos, API pode estar retornando duplicatas
+      if (novos.length === 0) {
+        console.log(`[TASK-SVC] Tarefa "${taskName}" (${tipoLista}): nenhum processo novo na página ${pageNum}, encerrando`);
+        break;
+      }
+
+      // Se retornou menos que pageSize, é a última página
+      if (result.entities.length < pageSize) {
+        console.log(`[TASK-SVC] Tarefa "${taskName}" (${tipoLista}): última página (${result.entities.length} < ${pageSize})`);
+        break;
+      }
+
       offset += pageSize;
-
       await sleep(config.pje.requestDelay);
     }
+
+    console.log(`[TASK-SVC] Tarefa "${taskName}" (${tipoLista}): TOTAL FINAL = ${seenIds.size} processos`);
   }
 }
 

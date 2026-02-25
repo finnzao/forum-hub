@@ -32,7 +32,6 @@ import {
 } from '../../componentes/pje-download/api';
 
 import { Cabecalho } from '../../componentes/layout/Cabecalho';
-import { Rodape } from '../../componentes/layout/Rodape';
 
 // ── Indicador de etapas ──────────────────────────────────────
 
@@ -472,7 +471,6 @@ export default function PaginaDownloadPJE() {
       <div className="sticky bottom-0 z-40">
         <PainelLogs logs={logs} onLimpar={limparLogs} />
       </div>
-      <Rodape />
     </div>
   );
 }

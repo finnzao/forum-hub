@@ -2,21 +2,22 @@
 // apps/api/src/modules/pje-download/services/pje-auth-proxy.service.ts
 // Proxy de autenticação PJE — login real no SSO do TJBA
 //
-// Correções v7:
-//  - Extração de perfis reescrita: identifica TODOS os perfis
-//    pela presença de links dtPerfil:N:j_id70, extraindo nome
-//    da <td> que contém o texto descritivo (geralmente a maior)
-//  - Favoritos detectados por ícone star preenchido (classe/src)
-//    na MESMA <tr>, não por j_id66 global
-//  - situacaoDownload aceita 'S' além de 'DISPONIVEL'
-//  - Persiste cookies SSO entre sessões (evita 2FA repetido)
+// Correções v11:
+//  - BUG PRINCIPAL CORRIGIDO: o POST ao SSO enviava apenas
+//    (username, password, credentialId) mas o form Keycloak do
+//    PJE-TJBA tem campos customizados (pjeoffice-code, phrase).
+//    Agora extraímos TODOS os campos do form (hidden + visible)
+//    e fazemos merge com username/password.
+//  - Sessão persistida por CPF: reutiliza sessão ativa sem re-login
+//  - Log detalhado dos cookies enviados em cada redirect hop
+//  - Detecção de ;jsessionid= em Location (JBoss Seam URL rewriting)
 // ============================================================
 
 const PJE_BASE = 'https://pje.tjba.jus.br';
 const PJE_REST_BASE = `${PJE_BASE}/pje/seam/resource/rest/pje-legacy`;
 const PJE_FRONTEND_ORIGIN = 'https://frontend.cloud.pje.jus.br';
 const PJE_LEGACY_APP = 'pje-tjba-1g';
-const MAX_REDIRECTS = 15;
+const MAX_REDIRECTS = 25;
 
 // ── Tipos ─────────────────────────────────────────────────────
 
@@ -48,40 +49,155 @@ export interface PJEProfileResult {
 }
 
 // ══════════════════════════════════════════════════════════════
-// COOKIE PERSISTENCE — mantém cookies SSO entre logins
+// COOKIE JAR POR DOMÍNIO
 // ══════════════════════════════════════════════════════════════
 
-const persistentCookies = new Map<string, {
-  cookies: Record<string, string>;
-  updatedAt: number;
-}>();
+class CookieJar {
+  private jar = new Map<string, Record<string, string>>();
 
-const PERSISTENT_COOKIE_TTL = 8 * 60 * 60 * 1000; // 8 horas
-
-function getPersistentCookies(cpf: string): Record<string, string> {
-  const entry = persistentCookies.get(cpf);
-  if (!entry) return {};
-  if (Date.now() - entry.updatedAt > PERSISTENT_COOKIE_TTL) {
-    persistentCookies.delete(cpf);
-    return {};
+  private getDomain(url: string): string {
+    try { return new URL(url).hostname; } catch { return 'unknown'; }
   }
-  return { ...entry.cookies };
+
+  extractFromResponse(res: Response, requestUrl: string): void {
+    const domain = this.getDomain(requestUrl);
+    const setCookieHeaders: string[] = (res.headers as any).getSetCookie?.() || [];
+
+    if (setCookieHeaders.length === 0) {
+      const raw = res.headers.get('set-cookie');
+      if (raw) setCookieHeaders.push(...raw.split(/,(?=\s*\w+=)/));
+    }
+
+    if (setCookieHeaders.length === 0) return;
+
+    if (!this.jar.has(domain)) this.jar.set(domain, {});
+    const domainCookies = this.jar.get(domain)!;
+
+    const newCookies: string[] = [];
+    for (const raw of setCookieHeaders) {
+      const [pair] = raw.split(';');
+      const eqIdx = pair.indexOf('=');
+      if (eqIdx > 0) {
+        const name = pair.slice(0, eqIdx).trim();
+        const value = pair.slice(eqIdx + 1).trim();
+        if (name && !name.startsWith('__')) {
+          domainCookies[name] = value;
+          newCookies.push(name);
+        }
+      }
+    }
+
+    if (newCookies.length > 0) {
+      console.log(`[PJE-AUTH]     cookies set by ${domain}: ${newCookies.join(', ')}`);
+    }
+  }
+
+  serializeForUrl(url: string): string {
+    const requestDomain = this.getDomain(url);
+    const allCookies: Record<string, string> = {};
+    for (const [domain, cookies] of this.jar) {
+      if (requestDomain === domain || requestDomain.endsWith('.' + domain)) {
+        Object.assign(allCookies, cookies);
+      }
+    }
+    return Object.entries(allCookies).map(([k, v]) => `${k}=${v}`).join('; ');
+  }
+
+  getCookie(domain: string, name: string): string | undefined {
+    return this.jar.get(domain)?.[name];
+  }
+
+  setCookie(domain: string, name: string, value: string): void {
+    if (!this.jar.has(domain)) this.jar.set(domain, {});
+    this.jar.get(domain)![name] = value;
+  }
+
+  exportAll(): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const [domain, cookies] of this.jar) {
+      for (const [name, value] of Object.entries(cookies)) {
+        result[`${domain}::${name}`] = value;
+      }
+    }
+    return result;
+  }
+
+  importAll(flat: Record<string, string>): void {
+    for (const [key, value] of Object.entries(flat)) {
+      const sepIdx = key.indexOf('::');
+      if (sepIdx > 0) {
+        const domain = key.slice(0, sepIdx);
+        const name = key.slice(sepIdx + 2);
+        if (!this.jar.has(domain)) this.jar.set(domain, {});
+        this.jar.get(domain)![name] = value;
+      } else {
+        if (!this.jar.has('pje.tjba.jus.br')) this.jar.set('pje.tjba.jus.br', {});
+        this.jar.get('pje.tjba.jus.br')![key] = value;
+      }
+    }
+  }
+
+  debugDump(): string {
+    const parts: string[] = [];
+    for (const [domain, cookies] of this.jar) {
+      const names = Object.keys(cookies);
+      parts.push(`  ${domain}: [${names.join(', ')}]`);
+    }
+    return parts.join('\n');
+  }
+
+  get size(): number {
+    let count = 0;
+    for (const cookies of this.jar.values()) count += Object.keys(cookies).length;
+    return count;
+  }
+
+  summary(): string {
+    const parts: string[] = [];
+    for (const [domain, cookies] of this.jar) parts.push(`${domain}(${Object.keys(cookies).length})`);
+    return parts.join(', ');
+  }
+
+  clear(): void { this.jar.clear(); }
 }
 
-function savePersistentCookies(cpf: string, cookies: Record<string, string>): void {
-  const existing = persistentCookies.get(cpf);
-  persistentCookies.set(cpf, {
-    cookies: { ...(existing?.cookies || {}), ...cookies },
-    updatedAt: Date.now(),
-  });
+// ══════════════════════════════════════════════════════════════
+// PERSISTÊNCIA DE SESSÃO POR CPF
+// ══════════════════════════════════════════════════════════════
+
+interface PersistedSession {
+  cookies: Record<string, string>;
+  idUsuarioLocalizacao: string;
+  user?: PJELoginResult['user'];
+  updatedAt: number;
+}
+
+const cpfSessions = new Map<string, PersistedSession>();
+const CPF_SESSION_TTL = 4 * 60 * 60 * 1000;
+
+function getPersistedSession(cpf: string): PersistedSession | null {
+  const entry = cpfSessions.get(cpf);
+  if (!entry) return null;
+  if (Date.now() - entry.updatedAt > CPF_SESSION_TTL) {
+    cpfSessions.delete(cpf);
+    return null;
+  }
+  return entry;
+}
+
+function savePersistedSession(cpf: string, data: Omit<PersistedSession, 'updatedAt'>): void {
+  cpfSessions.set(cpf, { ...data, updatedAt: Date.now() });
+}
+
+function clearPersistedSession(cpf: string): void {
+  cpfSessions.delete(cpf);
 }
 
 // ── Classe principal ──────────────────────────────────────────
 
 export class PJEAuthProxy {
-  private cookies: Record<string, string> = {};
+  private cookieJar = new CookieJar();
   private idUsuarioLocalizacao = '';
-  private idUsuario = '';
   private cpf = '';
 
   // ══════════════════════════════════════════════════════════
@@ -90,68 +206,142 @@ export class PJEAuthProxy {
 
   async login(cpf: string, password: string): Promise<PJELoginResult> {
     this.cpf = cpf;
-
     try {
-      // Restaurar cookies persistidos (SSO + PJE) — evita 2FA
-      this.cookies = getPersistentCookies(cpf);
-      const hadPersisted = Object.keys(this.cookies).length > 0;
+      // ── 0. Tentar reutilizar sessão existente ──
+      const persisted = getPersistedSession(cpf);
+      if (persisted) {
+        console.log(`[PJE-AUTH] Sessão persistida encontrada para CPF ***${cpf.slice(-4)}, validando...`);
+        this.cookieJar.importAll(persisted.cookies);
+        this.idUsuarioLocalizacao = persisted.idUsuarioLocalizacao;
 
-      if (hadPersisted) {
-        console.log(`[PJE-AUTH] Cookies persistidos encontrados para ***${cpf.slice(-4)} (${Object.keys(this.cookies).length} cookies)`);
+        const valid = await this.tryValidateExistingSession();
+        if (valid) {
+          console.log(`[PJE-AUTH] Sessão persistida VÁLIDA — reutilizando`);
+          savePersistedSession(cpf, {
+            cookies: this.cookieJar.exportAll(),
+            idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+            user: valid.user,
+          });
+          return valid;
+        }
+        console.log(`[PJE-AUTH] Sessão persistida EXPIRADA — login completo`);
+        clearPersistedSession(cpf);
+        this.cookieJar.clear();
       }
 
-      // 1. GET login.seam → SSO
-      const ssoPage = await this.followGet(`${PJE_BASE}/pje/login.seam`);
+      // ── 1. GET login.seam → redirects → SSO form ──
+      console.log(`[PJE-AUTH] Step 1: GET ${PJE_BASE}/pje/login.seam`);
+      const ssoPage = await this.followRedirects('GET', `${PJE_BASE}/pje/login.seam`);
+      console.log(`[PJE-AUTH] Step 1 done: finalUrl=${ssoPage.finalUrl} (${ssoPage.body.length} chars)`);
 
-      // Se já redirecionou para o painel (cookies válidos), pula login
       if (this.isLoggedInUrl(ssoPage.finalUrl)) {
-        console.log(`[PJE-AUTH] Sessão já ativa, pulando login`);
-        this.persistCookies();
+        console.log(`[PJE-AUTH] Sessão já ativa`);
         return await this.validateAndBuildResponse();
       }
 
-      const actionUrl = this.extractFormAction(ssoPage.body, ssoPage.finalUrl);
-      if (!actionUrl) {
+      // ── 2. Extrair TODOS os campos do form SSO ──
+      const formData = this.extractFormFields(ssoPage.body, ssoPage.finalUrl);
+      if (!formData.actionUrl) {
+        console.error(`[PJE-AUTH] Form SSO não encontrado. URL: ${ssoPage.finalUrl}`);
         return { needs2FA: false, error: 'Formulário SSO não encontrado.' };
       }
 
-      // 2. POST credenciais
-      const loginResult = await this.followPost(actionUrl, new URLSearchParams({
+      // Merge: campos extraídos do form + credenciais do usuário
+      // Isso garante que pjeoffice-code, phrase, e qualquer outro campo
+      // customizado do Keycloak PJE-TJBA sejam enviados
+      const postFields = {
+        ...formData.fields,
         username: cpf,
-        password: password,
-        credentialId: '',
-      }));
+        password,
+      };
 
-      // 3. Detectar 2FA
+      const fieldNames = Object.keys(postFields);
+      console.log(`[PJE-AUTH] Step 2: POST to ${formData.actionUrl.substring(0, 100)}...`);
+      console.log(`[PJE-AUTH]   form fields: [${fieldNames.join(', ')}]`);
+
+      // ── 3. POST credenciais ao SSO ──
+      const loginResult = await this.followRedirects(
+        'POST',
+        formData.actionUrl,
+        new URLSearchParams(postFields),
+      );
+      console.log(`[PJE-AUTH] Step 2 done: finalUrl=${loginResult.finalUrl} (status=${loginResult.status})`);
+
+      // ── 4. Verificar resultado ──
+
+      // 4a. 2FA?
       if (this.detect2FA(loginResult.body, loginResult.finalUrl)) {
-        this.persistCookies();
-
+        this.persistSession();
         const sessionId = this.generateSessionId();
         sessionStore.set(sessionId, {
-          cookies: { ...this.cookies },
+          cookies: this.cookieJar.exportAll(),
           idUsuarioLocalizacao: this.idUsuarioLocalizacao,
-          idUsuario: this.idUsuario,
-          ssoHtml: loginResult.body,
-          ssoFinalUrl: loginResult.finalUrl,
-          cpf,
+          ssoHtml: loginResult.body, ssoFinalUrl: loginResult.finalUrl, cpf,
         });
         return { needs2FA: true, sessionId };
       }
 
-      // 4. Login OK?
+      // 4b. Login OK (painel)?
       if (this.isLoggedInUrl(loginResult.finalUrl)) {
-        this.persistCookies();
+        console.log(`[PJE-AUTH] Login OK — chegou ao painel`);
         return await this.validateAndBuildResponse();
       }
 
-      const errorMsg = this.extractLoginError(loginResult.body);
-      if (!errorMsg) {
-        console.error(`[PJE-AUTH] Login falhou sem mensagem de erro detectada. URL final: ${loginResult.finalUrl}`);
-        console.error(`[PJE-AUTH] HTML snippet (primeiros 500 chars):`, loginResult.body.slice(0, 500));
+      // 4c. Voltou ao SSO → credenciais incorretas ou erro
+      if (loginResult.finalUrl.includes('openid-connect/auth') ||
+          loginResult.finalUrl.includes('sso.cloud.pje.jus.br/auth/realms')) {
+        const errorMsg = this.extractLoginError(loginResult.body);
+        if (errorMsg) return { needs2FA: false, error: errorMsg };
+
+        if (loginResult.body.includes('kc-form-login') || loginResult.body.includes('username')) {
+          console.log(`[PJE-AUTH] Voltou ao form SSO`);
+          console.log(`[PJE-AUTH] Cookie jar:\n${this.cookieJar.debugDump()}`);
+          return { needs2FA: false, error: 'CPF ou senha incorretos.' };
+        }
       }
-      return { needs2FA: false, error: errorMsg || 'CPF ou senha incorretos.' };
+
+      const errorMsg = this.extractLoginError(loginResult.body);
+      if (errorMsg) return { needs2FA: false, error: errorMsg };
+
+      console.error(`[PJE-AUTH] Login falhou. URL: ${loginResult.finalUrl}`);
+      return { needs2FA: false, error: 'Falha no login. Verifique CPF e senha.' };
     } catch (err) {
-      return { needs2FA: false, error: err instanceof Error ? err.message : 'Erro desconhecido no login' };
+      console.error(`[PJE-AUTH] Exception:`, err);
+      return { needs2FA: false, error: err instanceof Error ? err.message : 'Erro desconhecido' };
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // VALIDAR SESSÃO EXISTENTE
+  // ══════════════════════════════════════════════════════════
+
+  private async tryValidateExistingSession(): Promise<PJELoginResult | null> {
+    try {
+      const user = await this.apiGet<any>('usuario/currentUser');
+      if (!user?.idUsuario) return null;
+
+      this.idUsuarioLocalizacao = String(user.idUsuarioLocalizacaoMagistradoServidor || '');
+      const sessionId = this.generateSessionId();
+      sessionStore.set(sessionId, {
+        cookies: this.cookieJar.exportAll(),
+        idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+        cpf: this.cpf,
+      });
+
+      return {
+        needs2FA: false,
+        sessionId,
+        user: {
+          idUsuario: user.idUsuario,
+          nomeUsuario: user.nomeUsuario,
+          login: user.login,
+          perfil: user.perfil || user.nomePerfil || '',
+          nomePerfil: user.nomePerfil || user.perfil || '',
+          idUsuarioLocalizacaoMagistradoServidor: user.idUsuarioLocalizacaoMagistradoServidor,
+        },
+      };
+    } catch {
+      return null;
     }
   }
 
@@ -162,55 +352,32 @@ export class PJEAuthProxy {
   async submit2FA(sessionId: string, code: string): Promise<PJELoginResult> {
     try {
       const stored = sessionStore.get(sessionId);
-      if (!stored) {
-        return { needs2FA: false, error: 'Sessão 2FA expirada ou inválida.' };
-      }
+      if (!stored) return { needs2FA: false, error: 'Sessão 2FA expirada.' };
 
-      this.cookies = { ...stored.cookies };
+      this.cookieJar.importAll(stored.cookies);
       this.idUsuarioLocalizacao = stored.idUsuarioLocalizacao;
-      this.idUsuario = stored.idUsuario || '';
       this.cpf = stored.cpf || '';
 
-      const html = stored.ssoHtml || '';
-      const baseUrl = stored.ssoFinalUrl || '';
-      const actionUrl = this.extractFormAction(html, baseUrl);
+      const formData = this.extractFormFields(stored.ssoHtml || '', stored.ssoFinalUrl || '');
+      if (!formData.actionUrl) return { needs2FA: false, error: 'Formulário 2FA não encontrado.' };
 
-      if (!actionUrl) {
-        return { needs2FA: false, error: 'Formulário 2FA não encontrado.' };
-      }
-
-      const hiddenFields = this.extractHiddenFields(html, baseUrl);
-
-      const result = await this.followPost(actionUrl, new URLSearchParams({
-        code,
-        ...hiddenFields,
-      }));
-
+      const postFields = { ...formData.fields, code };
+      const result = await this.followRedirects('POST', formData.actionUrl, new URLSearchParams(postFields));
       sessionStore.delete(sessionId);
 
       if (this.isLoggedInUrl(result.finalUrl)) {
-        this.persistCookies();
         return await this.validateAndBuildResponse();
       }
-
       if (this.detect2FA(result.body, result.finalUrl)) {
-        this.persistCookies();
-        const newSessionId = this.generateSessionId();
-        sessionStore.set(newSessionId, {
-          cookies: { ...this.cookies },
+        this.persistSession();
+        const newSid = this.generateSessionId();
+        sessionStore.set(newSid, {
+          cookies: this.cookieJar.exportAll(),
           idUsuarioLocalizacao: this.idUsuarioLocalizacao,
-          idUsuario: this.idUsuario,
-          ssoHtml: result.body,
-          ssoFinalUrl: result.finalUrl,
-          cpf: this.cpf,
+          ssoHtml: result.body, ssoFinalUrl: result.finalUrl, cpf: this.cpf,
         });
-        return {
-          needs2FA: true,
-          sessionId: newSessionId,
-          error: 'Código 2FA inválido ou expirado. Tente novamente.',
-        };
+        return { needs2FA: true, sessionId: newSid, error: 'Código inválido ou expirado.' };
       }
-
       return { needs2FA: false, error: 'Falha na verificação 2FA.' };
     } catch (err) {
       return { needs2FA: false, error: err instanceof Error ? err.message : 'Erro no 2FA' };
@@ -224,59 +391,37 @@ export class PJEAuthProxy {
   async selectProfile(sessionId: string, profileIndex: number): Promise<PJEProfileResult> {
     try {
       const stored = sessionStore.get(sessionId);
-      if (!stored) {
-        return { tasks: [], favoriteTasks: [], tags: [], error: 'Sessão expirada.' };
-      }
+      if (!stored) return { tasks: [], favoriteTasks: [], tags: [], error: 'Sessão expirada.' };
 
-      this.cookies = { ...stored.cookies };
+      this.cookieJar.importAll(stored.cookies);
       this.idUsuarioLocalizacao = stored.idUsuarioLocalizacao;
-      this.idUsuario = stored.idUsuario || '';
       this.cpf = stored.cpf || '';
 
-      // GET página de perfis
-      const profilePage = await this.followGet(`${PJE_BASE}/pje/ng2/dev.seam`);
+      const profilePage = await this.followRedirects('GET', `${PJE_BASE}/pje/ng2/dev.seam`);
       const viewState = this.extractViewState(profilePage.body);
+      if (!viewState) return { tasks: [], favoriteTasks: [], tags: [], error: 'ViewState não encontrado.' };
 
-      if (!viewState) {
-        return { tasks: [], favoriteTasks: [], tags: [], error: 'ViewState não encontrado.' };
-      }
-
-      // POST selecionar perfil
-      await this.followPost(`${PJE_BASE}/pje/ng2/dev.seam`, new URLSearchParams({
+      await this.followRedirects('POST', `${PJE_BASE}/pje/ng2/dev.seam`, new URLSearchParams({
         'papeisUsuarioForm': 'papeisUsuarioForm',
         'papeisUsuarioForm:j_id60': '',
         'papeisUsuarioForm:j_id72': 'papeisUsuarioForm:j_id72',
         'javax.faces.ViewState': viewState,
-        [`papeisUsuarioForm:dtPerfil:${profileIndex}:j_id70`]:
-          `papeisUsuarioForm:dtPerfil:${profileIndex}:j_id70`,
+        [`papeisUsuarioForm:dtPerfil:${profileIndex}:j_id70`]: `papeisUsuarioForm:dtPerfil:${profileIndex}:j_id70`,
       }));
 
-      // Revalidar currentUser
       const user = await this.apiGet<any>('usuario/currentUser');
       if (user?.idUsuarioLocalizacaoMagistradoServidor) {
         this.idUsuarioLocalizacao = String(user.idUsuarioLocalizacaoMagistradoServidor);
       }
-      if (user?.idUsuario) {
-        this.idUsuario = String(user.idUsuario);
-      }
 
-      // Atualizar sessão
-      stored.cookies = { ...this.cookies };
+      stored.cookies = this.cookieJar.exportAll();
       stored.idUsuarioLocalizacao = this.idUsuarioLocalizacao;
-      stored.idUsuario = this.idUsuario;
-      this.persistCookies();
+      this.persistSession(user);
 
-      // Carregar tarefas + etiquetas
       const [tasks, favoriteTasks, tagsResult] = await Promise.all([
-        this.apiPost<any[]>('painelUsuario/tarefas', {
-          numeroProcesso: '', competencia: '', etiquetas: [],
-        }).catch(() => []),
-        this.apiPost<any[]>('painelUsuario/tarefasFavoritas', {
-          numeroProcesso: '', competencia: '', etiquetas: [],
-        }).catch(() => []),
-        this.apiPost<{ entities: any[] }>('painelUsuario/etiquetas', {
-          page: 0, maxResults: 500, tagsString: '',
-        }).catch(() => ({ entities: [] })),
+        this.apiPost<any[]>('painelUsuario/tarefas', { numeroProcesso: '', competencia: '', etiquetas: [] }).catch(() => []),
+        this.apiPost<any[]>('painelUsuario/tarefasFavoritas', { numeroProcesso: '', competencia: '', etiquetas: [] }).catch(() => []),
+        this.apiPost<{ entities: any[] }>('painelUsuario/etiquetas', { page: 0, maxResults: 500, tagsString: '' }).catch(() => ({ entities: [] })),
       ]);
 
       return {
@@ -290,33 +435,30 @@ export class PJEAuthProxy {
   }
 
   // ══════════════════════════════════════════════════════════
-  // VALIDATE & BUILD RESPONSE
+  // VALIDAR E CONSTRUIR RESPOSTA
   // ══════════════════════════════════════════════════════════
 
   private async validateAndBuildResponse(): Promise<PJELoginResult> {
     const user = await this.apiGet<any>('usuario/currentUser');
-
     if (!user?.idUsuario) {
-      console.error('[PJE-AUTH] currentUser falhou. Cookies:', Object.keys(this.cookies).join(', '));
+      console.error('[PJE-AUTH] currentUser falhou. Cookies:', this.cookieJar.summary());
+      console.log(`[PJE-AUTH] Cookie jar:\n${this.cookieJar.debugDump()}`);
       return { needs2FA: false, error: 'Sessão inválida após login.' };
     }
 
     this.idUsuarioLocalizacao = String(user.idUsuarioLocalizacaoMagistradoServidor || '');
-    this.idUsuario = String(user.idUsuario || '');
-
     const sessionId = this.generateSessionId();
     sessionStore.set(sessionId, {
-      cookies: { ...this.cookies },
+      cookies: this.cookieJar.exportAll(),
       idUsuarioLocalizacao: this.idUsuarioLocalizacao,
-      idUsuario: this.idUsuario,
       cpf: this.cpf,
     });
 
+    this.persistSession(user);
     const profiles = await this.extractProfiles();
 
     return {
-      needs2FA: false,
-      sessionId,
+      needs2FA: false, sessionId,
       user: {
         idUsuario: user.idUsuario,
         nomeUsuario: user.nomeUsuario,
@@ -329,293 +471,151 @@ export class PJEAuthProxy {
     };
   }
 
+  private persistSession(user?: any): void {
+    if (!this.cpf) return;
+    savePersistedSession(this.cpf, {
+      cookies: this.cookieJar.exportAll(),
+      idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+      user: user ? {
+        idUsuario: user.idUsuario,
+        nomeUsuario: user.nomeUsuario,
+        login: user.login,
+        perfil: user.perfil || user.nomePerfil || '',
+        nomePerfil: user.nomePerfil || user.perfil || '',
+        idUsuarioLocalizacaoMagistradoServidor: user.idUsuarioLocalizacaoMagistradoServidor,
+      } : undefined,
+    });
+  }
+
   // ══════════════════════════════════════════════════════════
-  // EXTRACT PROFILES — v6: reescrito para pegar TODOS os perfis
-  //
-  // Estratégia:
-  //  1. Encontra o <tbody> da tabela dtPerfil
-  //  2. Separa cada <tr> cuidadosamente
-  //  3. Para cada <tr>, extrai o índice real via dtPerfil:N:j_id70
-  //  4. Detecta favorito pela presença de ícone star preenchido
-  //     OU pelo link j_id66 (favorito do perfil ativo) NA MESMA row
-  //  5. Extrai o nome da <td> mais descritiva (texto mais longo)
+  // EXTRAIR PERFIS
   // ══════════════════════════════════════════════════════════
 
   private async extractProfiles(): Promise<PJELoginResult['profiles']> {
     try {
-      const page = await this.followGet(`${PJE_BASE}/pje/ng2/dev.seam`);
+      const page = await this.followRedirects('GET', `${PJE_BASE}/pje/ng2/dev.seam`);
       const html = page.body;
       const profiles: Array<{ indice: number; nome: string; orgao: string; favorito: boolean }> = [];
 
-      console.log(`[PJE-AUTH] dev.seam HTML: ${html.length} chars`);
-
-      // ─── Estratégia principal: encontrar TODOS os links dtPerfil:N:j_id70 ───
-      // e para cada índice, extrair a <tr> correspondente completa
-
-      // Passo 1: encontrar todos os índices únicos de perfis
       const indexSet = new Set<number>();
-      const indexRegex = /papeisUsuarioForm:dtPerfil:(\d+):j_id70/g;
-      let idxMatch;
-      while ((idxMatch = indexRegex.exec(html)) !== null) {
-        indexSet.add(parseInt(idxMatch[1], 10));
-      }
+      const indexRegex = /papeisUsuarioForm:dtPerfil:(\d+)/g;
+      let m;
+      while ((m = indexRegex.exec(html)) !== null) indexSet.add(parseInt(m[1], 10));
       const allIndices = [...indexSet].sort((a, b) => a - b);
+      console.log(`[PJE-AUTH] Perfis indices: [${allIndices.join(', ')}]`);
 
-      console.log(`[PJE-AUTH] Índices de perfis encontrados: [${allIndices.join(', ')}]`);
-
-      if (allIndices.length === 0) {
-        console.warn('[PJE-AUTH] Nenhum índice de perfil encontrado no HTML');
-        return [];
-      }
-
-      // Passo 2: para cada índice, encontrar a <tr> que contém o link
       for (const idx of allIndices) {
-        // Encontrar o link dtPerfil:N:j_id70 no HTML
-        const linkPattern = `papeisUsuarioForm:dtPerfil:${idx}:j_id70`;
-        const linkPos = html.indexOf(linkPattern);
+        const linkPos = html.indexOf(`papeisUsuarioForm:dtPerfil:${idx}:j_id70`);
         if (linkPos < 0) continue;
 
-        // Voltar até o <tr> mais próximo que abre esta row
-        const beforeLink = html.substring(Math.max(0, linkPos - 3000), linkPos);
-        const trOpenIdx = beforeLink.lastIndexOf('<tr');
-        if (trOpenIdx < 0) continue;
+        const before = html.substring(Math.max(0, linkPos - 3000), linkPos);
+        const trIdx = before.lastIndexOf('<tr');
+        if (trIdx < 0) continue;
 
-        const trStart = Math.max(0, linkPos - 3000) + trOpenIdx;
+        const trStart = Math.max(0, linkPos - 3000) + trIdx;
+        const after = html.substring(trStart);
+        const trClose = after.match(/<\/tr>/i);
+        if (!trClose || trClose.index === undefined) continue;
 
-        // Encontrar o </tr> que fecha esta row
-        const afterTrStart = html.substring(trStart);
-        const trCloseMatch = afterTrStart.match(/<\/tr>/i);
-        if (!trCloseMatch || trCloseMatch.index === undefined) continue;
+        const row = after.substring(0, trClose.index + 5);
+        const isFav = row.includes('j_id66') || /class="[^"]*(?:ui-icon-star|star-filled|favorit)/i.test(row);
 
-        const rowHtml = afterTrStart.substring(0, trCloseMatch.index + 5);
-
-        // Passo 3: detectar favorito dentro desta <tr>
-        // Favorito pode ser indicado por:
-        //  - Link j_id66 na mesma row (perfil favorito com link de "desfavoritar")
-        //  - Ícone de estrela preenchida (img com star amarela, ou classe star-filled)
-        //  - Classe CSS com "favorit" na mesma row
-        const isFavorito =
-          rowHtml.includes('j_id66') ||
-          // Estrela preenchida como imagem (ex: star_yellow, star_filled, star-on)
-          /src="[^"]*star[^"]*(?:yellow|filled|on|active)[^"]*"/i.test(rowHtml) ||
-          /src="[^"]*(?:yellow|filled|on|active)[^"]*star[^"]*"/i.test(rowHtml) ||
-          // Ícone preenchido via CSS class
-          /class="[^"]*(?:ui-icon-star\b|star-filled|favorit|favoritado)/i.test(rowHtml) ||
-          // Ícone de estrela RichFaces — star preenchida vs vazia
-          // A estrela vazia geralmente tem "j_id68" ou similar, a preenchida tem "j_id66"
-          // Verificar se a imagem/ícone de estrela tem src/class indicando "preenchida"
-          ((): boolean => {
-            // Buscar todas as <img> ou <span> com star na row
-            const starImgs = rowHtml.match(/<(?:img|span)[^>]*(?:star|favorit)[^>]*>/gi) || [];
-            for (const img of starImgs) {
-              // Se a imagem de estrela tem atributos indicando "ativa"
-              if (/(?:star_on|star-on|yellow|gold|filled|active|favorit)/i.test(img)) {
-                return true;
-              }
-            }
-            return false;
-          })();
-
-        // Passo 4: extrair nome do perfil
-        // Coletar todas as <td> com texto significativo
         const tds: string[] = [];
-        const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-        let tdMatch;
-        while ((tdMatch = tdRegex.exec(rowHtml)) !== null) {
-          const rawText = tdMatch[1];
-          const text = this.decodeHtmlEntities(this.stripHtml(rawText).trim());
-          // Ignorar células vazias, ícones, botões, ou texto muito curto
-          if (text.length > 3 &&
-              !/^selecionar$/i.test(text) &&
-              !/^favorit/i.test(text) &&
-              !/^\s*$/.test(text)) {
-            tds.push(text);
-          }
+        const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+        let td;
+        while ((td = tdRe.exec(row)) !== null) {
+          const t = this.decodeHtmlEntities(this.stripHtml(td[1]).trim());
+          if (t.length > 3 && !/^selecionar$/i.test(t)) tds.push(t);
         }
 
-        // O nome do perfil é a célula com texto mais longo
-        // (contém "ORGAO / Papel / Cargo")
-        let nome = '';
-        if (tds.length > 0) {
-          nome = tds.sort((a, b) => b.length - a.length)[0];
-        }
-
-        if (!nome) nome = `Perfil ${idx}`;
-
-        // Passo 5: extrair órgão do nome (primeira parte antes de " / ")
+        let nome = tds.length > 0 ? tds.sort((a, b) => b.length - a.length)[0] : `Perfil ${idx}`;
         let orgao = '';
         const parts = nome.split(' / ');
-        if (parts.length >= 2) {
-          orgao = parts[0].trim();
-        }
+        if (parts.length >= 2) orgao = parts[0].trim();
 
-        profiles.push({ indice: idx, nome, orgao, favorito: isFavorito });
+        profiles.push({ indice: idx, nome, orgao, favorito: isFav });
       }
 
-      // ─── Passo 6: Extrair perfil ativo/favorito do <thead> ───
-      // O perfil ativo aparece no <thead> com link j_id66 e ícone de
-      // estrela preenchida (favorite-16x16.png SEM -disabled).
-      // Este perfil NÃO tem dtPerfil:N:j_id70, então não é capturado
-      // pelo loop acima. Precisamos adicioná-lo manualmente.
-      const theadMatch = html.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i);
-      if (theadMatch) {
-        const thead = theadMatch[1];
-        // Verificar se tem j_id66 (link de favorito ativo)
-        const hasJ66 = thead.includes('j_id66');
-        // Verificar se tem estrela preenchida (não disabled)
-        const hasActiveStar =
-          thead.includes('favorite-16x16.png') &&
-          !thead.includes('favorite-16x16-disabled');
-
-        if (hasJ66 || hasActiveStar) {
-          // Extrair nome do perfil ativo
-          const j66NameMatch = thead.match(/j_id66[^>]*>([^<]+)/);
-          let activeName = j66NameMatch
-            ? this.decodeHtmlEntities(j66NameMatch[1].trim())
-            : '';
-
-          // Se não encontrou pelo j_id66, buscar a <td> mais longa no thead
-          if (!activeName) {
-            const theadTds: string[] = [];
-            const theadTdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-            let theadTdMatch;
-            while ((theadTdMatch = theadTdRegex.exec(thead)) !== null) {
-              const text = this.decodeHtmlEntities(this.stripHtml(theadTdMatch[1]).trim());
-              if (text.length > 3) theadTds.push(text);
-            }
-            if (theadTds.length > 0) {
-              activeName = theadTds.sort((a, b) => b.length - a.length)[0];
-            }
-          }
-
-          if (activeName) {
-            // Verificar se já não foi capturado nos profiles do tbody
-            const alreadyExists = profiles.some(
-              (p) => p.nome === activeName || p.nome.includes(activeName) || activeName.includes(p.nome)
-            );
-
-            if (!alreadyExists) {
-              let activeOrgao = '';
-              const activeParts = activeName.split(' / ');
-              if (activeParts.length >= 2) {
-                activeOrgao = activeParts[0].trim();
-              }
-
-              // Índice -1 indica perfil ativo (do thead, sem dtPerfil index)
-              profiles.unshift({
-                indice: -1,
-                nome: activeName,
-                orgao: activeOrgao,
-                favorito: true,
-              });
-
-              console.log(`[PJE-AUTH] Perfil ativo do <thead> adicionado: ⭐ ${activeName}`);
-            }
-          }
-        }
-      }
-
-      // ─── Log resultado ───
-      console.log(`[PJE-AUTH] Perfis extraídos: ${profiles.length}`);
-      for (const p of profiles) {
-        console.log(`  [${p.indice}] ${p.favorito ? '⭐ ' : '   '}${p.nome}`);
-      }
-
+      console.log(`[PJE-AUTH] Perfis: ${profiles.length}`);
+      for (const p of profiles) console.log(`  [${p.indice}] ${p.favorito ? '⭐ ' : ''}${p.nome}`);
       return profiles;
     } catch (err) {
-      console.error('[PJE-AUTH] Erro ao extrair perfis:', err);
+      console.error('[PJE-AUTH] Erro perfis:', err);
       return [];
     }
   }
 
-  // ══════════════════════════════════════════════════════════
-  // DEBUG: retorna HTML raw da página de perfis
-  // ══════════════════════════════════════════════════════════
-
   async debugGetProfilesHtml(sessionId: string): Promise<string> {
     const stored = sessionStore.get(sessionId);
     if (!stored) return '<h1>Sessão não encontrada</h1>';
-
-    this.cookies = { ...stored.cookies };
+    this.cookieJar.importAll(stored.cookies);
     this.idUsuarioLocalizacao = stored.idUsuarioLocalizacao;
-    this.idUsuario = stored.idUsuario || '';
-
-    const page = await this.followGet(`${PJE_BASE}/pje/ng2/dev.seam`);
-    return page.body;
+    return (await this.followRedirects('GET', `${PJE_BASE}/pje/ng2/dev.seam`)).body;
   }
 
   // ══════════════════════════════════════════════════════════
-  // PERSIST COOKIES
+  // HTTP: FOLLOW REDIRECTS
   // ══════════════════════════════════════════════════════════
 
-  private persistCookies(): void {
-    if (this.cpf) {
-      savePersistentCookies(this.cpf, this.cookies);
-    }
-  }
-
-  // ══════════════════════════════════════════════════════════
-  // HTTP: FOLLOW REDIRECTS MANUALLY
-  // ══════════════════════════════════════════════════════════
-
-  private async followGet(url: string): Promise<{ body: string; finalUrl: string; status: number }> {
+  private async followRedirects(
+    method: 'GET' | 'POST', url: string, body?: URLSearchParams,
+  ): Promise<{ body: string; finalUrl: string; status: number }> {
     let currentUrl = url;
+    let currentMethod = method;
+    let currentBody: URLSearchParams | undefined = body;
 
     for (let i = 0; i < MAX_REDIRECTS; i++) {
+      const cookieStr = this.cookieJar.serializeForUrl(currentUrl);
+
+      if (i <= 6) {
+        const domain = this.safeDomain(currentUrl);
+        const cookieNames = cookieStr ? cookieStr.split('; ').map(c => c.split('=')[0]) : [];
+        console.log(`[PJE-AUTH]     → ${currentMethod} ${domain}${this.safePath(currentUrl)} cookies: [${cookieNames.join(', ')}]`);
+      }
+
+      const headers: Record<string, string> = {
+        'Cookie': cookieStr,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+      };
+      if (currentMethod === 'POST' && currentBody) {
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      }
+
       const res = await fetch(currentUrl, {
-        method: 'GET',
-        headers: {
-          'Cookie': this.serializeCookies(),
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
+        method: currentMethod, headers,
+        body: currentMethod === 'POST' && currentBody ? currentBody.toString() : undefined,
         redirect: 'manual',
       });
 
-      this.extractCookiesFromResponse(res);
+      this.cookieJar.extractFromResponse(res, currentUrl);
 
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get('location');
-        if (!location) break;
-        currentUrl = this.resolveUrl(location, currentUrl);
         await res.text().catch(() => {});
+        if (!location) break;
+
+        let nextUrl = this.resolveUrl(location, currentUrl);
+
+        // JBoss Seam URL rewriting: ;jsessionid=XXX na Location
+        const jsessionMatch = nextUrl.match(/;jsessionid=([^?&#]+)/);
+        if (jsessionMatch) {
+          const domain = this.safeDomain(nextUrl);
+          console.log(`[PJE-AUTH]     (URL rewrite) jsessionid found for ${domain}`);
+          this.cookieJar.setCookie(domain, 'JSESSIONID', jsessionMatch[1]);
+        }
+
+        console.log(`[PJE-AUTH]   redirect #${i + 1}: ${res.status} ${this.truncUrl(currentUrl)} → ${this.truncUrl(nextUrl)}`);
+        currentUrl = nextUrl;
+        currentMethod = 'GET';
+        currentBody = undefined;
         continue;
       }
 
       return { body: await res.text(), finalUrl: currentUrl, status: res.status };
     }
-
-    throw new Error(`Excedido limite de redirects para ${url}`);
-  }
-
-  private async followPost(
-    url: string,
-    body: URLSearchParams,
-  ): Promise<{ body: string; finalUrl: string; status: number }> {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Cookie': this.serializeCookies(),
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-      body: body.toString(),
-      redirect: 'manual',
-    });
-
-    this.extractCookiesFromResponse(res);
-
-    if (res.status < 300 || res.status >= 400) {
-      return { body: await res.text(), finalUrl: url, status: res.status };
-    }
-
-    const location = res.headers.get('location');
-    await res.text().catch(() => {});
-
-    if (!location) {
-      return { body: '', finalUrl: url, status: res.status };
-    }
-
-    return this.followGet(this.resolveUrl(location, url));
+    throw new Error(`Excedido limite de ${MAX_REDIRECTS} redirects`);
   }
 
   // ══════════════════════════════════════════════════════════
@@ -625,7 +625,7 @@ export class PJEAuthProxy {
   private async apiGet<T = any>(endpoint: string): Promise<T> {
     const url = `${PJE_REST_BASE}/${endpoint}`;
     const res = await fetch(url, { method: 'GET', headers: this.buildRestHeaders(), redirect: 'follow' });
-    this.extractCookiesFromResponse(res);
+    this.cookieJar.extractFromResponse(res, url);
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json')) return (await res.json()) as T;
     return (await res.text()) as unknown as T;
@@ -633,133 +633,146 @@ export class PJEAuthProxy {
 
   private async apiPost<T = any>(endpoint: string, body: Record<string, unknown>): Promise<T> {
     const url = `${PJE_REST_BASE}/${endpoint}`;
-    const res = await fetch(url, {
-      method: 'POST', headers: this.buildRestHeaders(),
-      body: JSON.stringify(body), redirect: 'follow',
-    });
-    this.extractCookiesFromResponse(res);
+    const res = await fetch(url, { method: 'POST', headers: this.buildRestHeaders(), body: JSON.stringify(body), redirect: 'follow' });
+    this.cookieJar.extractFromResponse(res, url);
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json')) return (await res.json()) as T;
     return (await res.text()) as unknown as T;
   }
 
   private buildRestHeaders(): Record<string, string> {
+    const cookieStr = this.cookieJar.serializeForUrl(PJE_REST_BASE);
     return {
       'Content-Type': 'application/json',
       'X-pje-legacy-app': PJE_LEGACY_APP,
       'Origin': PJE_FRONTEND_ORIGIN,
       'Referer': `${PJE_FRONTEND_ORIGIN}/`,
-      'X-pje-cookies': this.serializeCookies(),
+      'X-pje-cookies': cookieStr,
       'X-pje-usuario-localizacao': this.idUsuarioLocalizacao,
-      'Cookie': this.serializeCookies(),
+      'Cookie': cookieStr,
     };
   }
 
   // ══════════════════════════════════════════════════════════
-  // COOKIES
+  // HTML / FORM PARSING
   // ══════════════════════════════════════════════════════════
 
-  private serializeCookies(): string {
-    return Object.entries(this.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
-  }
+  /**
+   * Extrai TODOS os campos de um form HTML.
+   *
+   * O Keycloak do PJE-TJBA tem campos customizados no login form:
+   *   - pjeoffice-code (hidden, valor vazio)
+   *   - phrase (hidden, valor vazio)
+   * Estes campos NÃO existem no Keycloak padrão.
+   *
+   * Nosso código antigo enviava apenas (username, password, credentialId),
+   * o que fazia o SSO aceitar as credenciais mas possivelmente processar
+   * o form de modo diferente, causando falha no redirect chain.
+   *
+   * Agora extraímos TODOS os inputs do form e fazemos merge com
+   * username/password, replicando exatamente o que o browser envia.
+   */
+  private extractFormFields(html: string, baseUrl: string): {
+    actionUrl: string | null;
+    fields: Record<string, string>;
+  } {
+    const fields: Record<string, string> = {};
+    let formHtml = '';
+    let actionUrl: string | null = null;
 
-  private extractCookiesFromResponse(res: Response): void {
-    const setCookieHeaders: string[] = (res.headers as any).getSetCookie?.() || [];
-    for (const raw of setCookieHeaders) {
-      const [pair] = raw.split(';');
-      const eqIdx = pair.indexOf('=');
-      if (eqIdx > 0) {
-        const name = pair.slice(0, eqIdx).trim();
-        const value = pair.slice(eqIdx + 1).trim();
-        if (name && !name.startsWith('__')) {
-          this.cookies[name] = value;
+    // 1. form#kc-form-login (preferido)
+    const kcFormMatch = html.match(/<form[^>]+id="kc-form-login"[^>]*>([\s\S]*?)<\/form>/i);
+    if (kcFormMatch) {
+      formHtml = kcFormMatch[0];
+      const actionMatch = kcFormMatch[0].match(/action="([^"]+)"/i);
+      if (actionMatch) {
+        const a = actionMatch[1].replace(/&amp;/g, '&');
+        actionUrl = a.startsWith('http') ? a : this.resolveUrl(a, baseUrl);
+      }
+    }
+
+    // 2. Fallback: form method=post
+    if (!actionUrl) {
+      const postFormMatch = html.match(/<form[^>]+method="post"[^>]*>([\s\S]*?)<\/form>/i)
+        || html.match(/<form[^>]*>([\s\S]*?)<\/form>/i);
+      if (postFormMatch) {
+        formHtml = postFormMatch[0];
+        const actionMatch = postFormMatch[0].match(/action="([^"]+)"/i);
+        if (actionMatch) {
+          const a = actionMatch[1].replace(/&amp;/g, '&');
+          actionUrl = a.startsWith('http') ? a : this.resolveUrl(a, baseUrl);
         }
       }
     }
-  }
 
-  // ══════════════════════════════════════════════════════════
-  // HTML PARSING
-  // ══════════════════════════════════════════════════════════
+    // 3. Fallback absoluto: action em qualquer lugar
+    if (!actionUrl) {
+      const actionMatch = html.match(/action="([^"]+)"/i);
+      if (actionMatch) {
+        const a = actionMatch[1].replace(/&amp;/g, '&');
+        actionUrl = a.startsWith('http') ? a : this.resolveUrl(a, baseUrl);
+      }
+      return { actionUrl, fields };
+    }
 
-  private extractFormAction(html: string, baseUrl: string): string | null {
-    const match = html.match(/action="([^"]+)"/);
-    if (!match) return null;
-    const action = match[1].replace(/&amp;/g, '&');
-    if (action.startsWith('http')) return action;
-    return this.resolveUrl(action, baseUrl);
+    // Extrair TODOS os campos <input> do form
+    const inputRegex = /<input[^>]*>/gi;
+    let inputMatch;
+    while ((inputMatch = inputRegex.exec(formHtml)) !== null) {
+      const tag = inputMatch[0];
+
+      const nameMatch = tag.match(/name="([^"]*)"/i);
+      if (!nameMatch) continue;
+      const name = nameMatch[1];
+
+      // Ignorar botões
+      const typeMatch = tag.match(/type="([^"]*)"/i);
+      const type = typeMatch ? typeMatch[1].toLowerCase() : 'text';
+      if (type === 'submit' || type === 'button' || type === 'image') continue;
+
+      const valueMatch = tag.match(/value="([^"]*)"/i);
+      const value = valueMatch ? valueMatch[1].replace(/&amp;/g, '&') : '';
+
+      fields[name] = value;
+    }
+
+    console.log(`[PJE-AUTH] Form fields extracted: [${Object.keys(fields).join(', ')}]`);
+    return { actionUrl, fields };
   }
 
   private detect2FA(html: string, url: string): boolean {
     const lower = html.toLowerCase();
-    return ['codigo enviado', 'digite o codigo', 'código de verificação',
-      'verification code', 'otp', 'two-factor',
-    ].some((p) => lower.includes(p)) || url.includes('otp');
+    return ['codigo enviado', 'digite o codigo', 'código de verificação', 'verification code', 'otp', 'two-factor']
+      .some((p) => lower.includes(p)) || url.includes('otp');
   }
 
   private extractLoginError(html: string): string | null {
     const patterns: Array<{ regex: RegExp; message?: string }> = [
       { regex: /class="[^"]*kc-feedback-text[^"]*"[^>]*>([^<]+)/i },
       { regex: /id="kc-error-message"[^>]*>([^<]+)/i },
-      { regex: /class="[^"]*login-pf-error[^"]*"[^>]*>([^<]+)/i },
       { regex: /class="[^"]*alert-error[^"]*"[^>]*>([^<]+)/i },
-      { regex: /class="[^"]*error-message[^"]*"[^>]*>([^<]+)/i },
-      { regex: /class="[^"]*error[^"]*"[^>]*>([^<]+)/i },
-      { regex: /class="[^"]*alert[^"]*"[^>]*>([^<]+)/i },
+      { regex: /<span[^>]*class="[^"]*kc-feedback-text[^"]*"[^>]*>([\s\S]*?)<\/span>/i },
       { regex: /Invalid username or password/i, message: 'CPF ou senha incorretos.' },
       { regex: /invalid.*credentials/i, message: 'CPF ou senha incorretos.' },
-      { regex: /Usuário ou senha inválidos/i, message: 'CPF ou senha incorretos.' },
-      { regex: /Account is disabled/i, message: 'Conta desativada. Entre em contato com o suporte do PJE.' },
-      { regex: /Account is locked/i, message: 'Conta bloqueada. Tente novamente mais tarde.' },
-      { regex: /Conta bloqueada/i, message: 'Conta bloqueada. Tente novamente mais tarde.' },
-      { regex: /User account is locked/i, message: 'Conta bloqueada temporariamente. Aguarde alguns minutos.' },
-      { regex: /expired/i, message: 'Sessão expirada. Tente novamente.' },
+      { regex: /Usu.rio ou senha inv.lidos/i, message: 'CPF ou senha incorretos.' },
+      { regex: /Account is disabled/i, message: 'Conta desativada.' },
+      { regex: /Account is locked/i, message: 'Conta bloqueada.' },
+      { regex: /Conta bloqueada/i, message: 'Conta bloqueada.' },
     ];
-
     for (const { regex, message } of patterns) {
       const match = html.match(regex);
       if (match) {
         if (message) return message;
-        const text = this.decodeHtmlEntities((match[1] || '').trim());
+        const text = this.decodeHtmlEntities(this.stripHtml((match[1] || '').trim()));
         if (text.length > 2 && text.length < 200) return text;
       }
     }
-
     return null;
   }
 
   private extractViewState(html: string): string | null {
     const match = html.match(/javax\.faces\.ViewState[^>]+value="([^"]+)"/);
     return match?.[1] || null;
-  }
-
-  private extractHiddenFields(html: string, baseUrl: string): Record<string, string> {
-    const fields: Record<string, string> = {};
-
-    for (const regex of [
-      /<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]*)"/gi,
-      /<input[^>]+name="([^"]+)"[^>]+type="hidden"[^>]+value="([^"]*)"/gi,
-    ]) {
-      let match;
-      while ((match = regex.exec(html)) !== null) {
-        if (!fields[match[1]]) fields[match[1]] = match[2];
-      }
-    }
-
-    const actionMatch = html.match(/action="([^"]+)"/);
-    if (actionMatch) {
-      try {
-        const rawUrl = actionMatch[1].replace(/&amp;/g, '&');
-        const parsed = new URL(rawUrl.startsWith('http') ? rawUrl : this.resolveUrl(rawUrl, baseUrl));
-        for (const [key, value] of parsed.searchParams) {
-          if (['session_code', 'execution', 'tab_id', 'client_id'].includes(key)) {
-            fields[key] = value;
-          }
-        }
-      } catch { /* */ }
-    }
-
-    return fields;
   }
 
   private isLoggedInUrl(url: string): boolean {
@@ -774,46 +787,43 @@ export class PJEAuthProxy {
     try { return new URL(location, base).toString(); } catch { return location; }
   }
 
+  private safeDomain(url: string): string {
+    try { return new URL(url).hostname; } catch { return '?'; }
+  }
+
+  private safePath(url: string): string {
+    try { return new URL(url).pathname.substring(0, 50); } catch { return ''; }
+  }
+
+  private truncUrl(url: string): string {
+    try {
+      const u = new URL(url);
+      const search = u.search.length > 40 ? u.search.substring(0, 40) + '...' : u.search;
+      return `${u.hostname}${u.pathname}${search}`;
+    } catch { return url.substring(0, 100); }
+  }
+
   private stripHtml(html: string): string {
-    return html
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    return html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+      .replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
   }
 
   private decodeHtmlEntities(text: string): string {
     return text
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&apos;/g, "'")
-      .replace(/&ccedil;/g, 'ç')
-      .replace(/&Ccedil;/g, 'Ç')
-      .replace(/&atilde;/g, 'ã')
-      .replace(/&Atilde;/g, 'Ã')
-      .replace(/&otilde;/g, 'õ')
-      .replace(/&Otilde;/g, 'Õ')
-      .replace(/&aacute;/g, 'á')
-      .replace(/&Aacute;/g, 'Á')
-      .replace(/&eacute;/g, 'é')
-      .replace(/&Eacute;/g, 'É')
-      .replace(/&iacute;/g, 'í')
-      .replace(/&Iacute;/g, 'Í')
-      .replace(/&oacute;/g, 'ó')
-      .replace(/&Oacute;/g, 'Ó')
-      .replace(/&uacute;/g, 'ú')
-      .replace(/&Uacute;/g, 'Ú')
-      .replace(/&agrave;/g, 'à')
-      .replace(/&egrave;/g, 'è')
-      .replace(/&acirc;/g, 'â')
-      .replace(/&ecirc;/g, 'ê')
-      .replace(/&ocirc;/g, 'ô')
-      .replace(/&uuml;/g, 'ü')
-      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
+      .replace(/&ccedil;/g, 'ç').replace(/&Ccedil;/g, 'Ç')
+      .replace(/&atilde;/g, 'ã').replace(/&Atilde;/g, 'Ã')
+      .replace(/&otilde;/g, 'õ').replace(/&Otilde;/g, 'Õ')
+      .replace(/&aacute;/g, 'á').replace(/&Aacute;/g, 'Á')
+      .replace(/&eacute;/g, 'é').replace(/&Eacute;/g, 'É')
+      .replace(/&iacute;/g, 'í').replace(/&Iacute;/g, 'Í')
+      .replace(/&oacute;/g, 'ó').replace(/&Oacute;/g, 'Ó')
+      .replace(/&uacute;/g, 'ú').replace(/&Uacute;/g, 'Ú')
+      .replace(/&agrave;/g, 'à').replace(/&egrave;/g, 'è')
+      .replace(/&acirc;/g, 'â').replace(/&ecirc;/g, 'ê').replace(/&ocirc;/g, 'ô')
+      .replace(/&uuml;/g, 'ü').replace(/&nbsp;/g, ' ')
       .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
       .replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
       .trim();
@@ -831,7 +841,6 @@ export class PJEAuthProxy {
 interface StoredSession {
   cookies: Record<string, string>;
   idUsuarioLocalizacao: string;
-  idUsuario: string;
   ssoHtml?: string;
   ssoFinalUrl?: string;
   cpf?: string;
@@ -842,9 +851,7 @@ class SessionStore {
   private store = new Map<string, StoredSession>();
   private readonly TTL = 30 * 60 * 1000;
 
-  constructor() {
-    setInterval(() => this.cleanup(), 5 * 60 * 1000);
-  }
+  constructor() { setInterval(() => this.cleanup(), 5 * 60 * 1000); }
 
   set(id: string, data: StoredSession): void {
     data.createdAt = Date.now();

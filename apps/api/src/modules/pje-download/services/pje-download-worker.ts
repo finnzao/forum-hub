@@ -2,16 +2,18 @@
 // apps/api/src/modules/pje-download/services/pje-download-worker.ts
 // Worker in-process — processa jobs de download do PJE
 //
-// Correções v7:
+// Correções v8:
+//  - Paginação corrigida: page agora usa offset correto para
+//    listas com mais de 500 processos. O campo "page" da API PJE
+//    espera o offset (0, 500, 1000...), não número de página.
+//  - isFavorite agora é explicitamente booleano (false por padrão)
+//    para garantir que "Todas as Tarefas" seja o comportamento
+//    quando não especificado como true.
+//  - Log melhorado para diferenciar favoritas vs todas
+//  - Verificação extra de duplicatas na paginação
 //  - situacaoDownload: aceita 'S' (real) além de 'DISPONIVEL'
 //  - idUsuario para recuperarDownloadsDisponiveis usa
 //    idUsuario do currentUser (NÃO idUsuarioLocalizacaoMagistradoServidor)
-//    Confirmado pelo HAR: idUsuario=14552753 funciona, 
-//    idUsuarioLocalizacaoMagistradoServidor=1463158 NÃO funciona
-//  - Download flow melhorado: solicita download → polling robusto
-//    com backoff progressivo e verificação de múltiplos status
-//  - Extração do botão de download mais robusta
-//  - Suporte a download em lotes com coleta de pendentes
 // ============================================================
 
 import { PJEAuthProxy, sessionStore } from './pje-auth-proxy.service';
@@ -33,16 +35,16 @@ const PJE_FRONTEND_ORIGIN = 'https://frontend.cloud.pje.jus.br';
 const PJE_LEGACY_APP = 'pje-tjba-1g';
 
 // Configuração
-const POLL_INTERVAL = 3000;             // Verificar novos jobs a cada 3s
-const DOWNLOAD_DELAY = 2000;            // Delay entre downloads individuais
-const DOWNLOAD_POLL_INTERVAL = 10000;   // Verificar área de downloads a cada 10s
-const DOWNLOAD_POLL_INITIAL = 5000;     // Primeira verificação após 5s
-const DOWNLOAD_TIMEOUT = 600000;        // 10 min timeout para download ficar disponível
-const DOWNLOAD_BATCH_SIZE = 10;         // Solicitar N downloads antes de aguardar
+const POLL_INTERVAL = 3000;
+const DOWNLOAD_DELAY = 2000;
+const DOWNLOAD_POLL_INTERVAL = 10000;
+const DOWNLOAD_POLL_INITIAL = 5000;
+const DOWNLOAD_TIMEOUT = 600000;
+const DOWNLOAD_BATCH_SIZE = 10;
 const DOWNLOAD_DIR = path.join(process.cwd(), 'downloads');
+const PAGE_SIZE = 500;
 
 // Status que indicam download disponível na API do PJE
-// O PJE usa 'S' (sim) como situação de disponível, não 'DISPONIVEL'
 const DOWNLOAD_AVAILABLE_STATUSES = ['S', 'DISPONIVEL', 'AVAILABLE'];
 
 export class PJEDownloadWorker {
@@ -177,8 +179,20 @@ export class PJEDownloadWorker {
 
         case 'by_task': {
           const taskName = params.taskName || '';
+          // CORREÇÃO v8: isFavorite deve ser estritamente booleano.
+          // false = "Todas as Tarefas" (lista completa sem filtro de favorito)
+          // true  = "Minhas Tarefas" (apenas processos marcados como favoritos)
           const isFavorite = params.isFavorite === true;
-          processos = await this.listProcessesByTask(stored, taskName, isFavorite);
+          const tipoLista = isFavorite ? 'Minhas Tarefas (Favoritas)' : 'Todas as Tarefas';
+
+          console.log(`[PJE-WORKER] Job ${shortId} buscando: ${tipoLista} → "${taskName}" (isFavorite=${isFavorite})`);
+
+          await this.updateStatus(
+            jobId, 'processing', 10,
+            `Listando processos: ${tipoLista} → "${taskName}"...`,
+          );
+
+          processos = await this.listProcessesByTask(stored, taskName, isFavorite, jobId);
           break;
         }
 
@@ -210,16 +224,11 @@ export class PJEDownloadWorker {
       });
 
       // ── 4. Download em lotes ───────────────────────────────
-      // Estratégia: solicita downloads em lotes de DOWNLOAD_BATCH_SIZE,
-      // depois aguarda todos os pendentes ficarem disponíveis na área
-      // de downloads antes de solicitar o próximo lote.
-
       const files: PJEDownloadedFile[] = [];
       const errors: PJEDownloadErrorType[] = [];
       let successCount = 0;
       let failureCount = 0;
 
-      // Processos cujo download foi solicitado mas ainda não baixado
       const pendingDownloads: Array<{
         proc: ProcessoInfo;
         requestedAt: number;
@@ -244,12 +253,10 @@ export class PJEDownloadWorker {
           const result = await this.requestDownload(stored, proc);
 
           if (result.type === 'direct' && result.file) {
-            // Download direto (URL S3 imediata)
             files.push(result.file);
             successCount++;
             console.log(`[PJE-WORKER] Job ${shortId} ✓ ${proc.numeroProcesso} (direto)`);
           } else if (result.type === 'queued') {
-            // Download foi para a fila — será coletado em batch
             pendingDownloads.push({ proc, requestedAt: Date.now() });
             console.log(`[PJE-WORKER] Job ${shortId} ⏳ ${proc.numeroProcesso} (na fila)`);
           } else {
@@ -272,7 +279,6 @@ export class PJEDownloadWorker {
           });
         }
 
-        // A cada lote, coletar downloads pendentes
         if (pendingDownloads.length >= DOWNLOAD_BATCH_SIZE || i === processos.length - 1) {
           if (pendingDownloads.length > 0) {
             await this.updateStatus(
@@ -306,7 +312,6 @@ export class PJEDownloadWorker {
           }
         }
 
-        // Delay entre solicitações
         if (i < processos.length - 1) {
           await this.sleep(DOWNLOAD_DELAY);
         }
@@ -363,7 +368,6 @@ export class PJEDownloadWorker {
             await this.sleep(DOWNLOAD_DELAY);
           }
 
-          // Coletar pendentes do retry
           if (retryPending.length > 0) {
             const batchResults = await this.collectPendingDownloads(stored, retryPending, jobId);
 
@@ -413,7 +417,6 @@ export class PJEDownloadWorker {
 
   // ══════════════════════════════════════════════════════════
   // SOLICITAR DOWNLOAD DE UM PROCESSO
-  // Retorna: 'direct' (com file), 'queued' (aguardando), ou 'error'
   // ══════════════════════════════════════════════════════════
 
   private async requestDownload(
@@ -431,7 +434,6 @@ export class PJEDownloadWorker {
     }
 
     try {
-      // 1. Gerar chave de acesso (ca)
       const caRaw = await this.apiGet<string>(
         stored,
         `painelUsuario/gerarChaveAcessoProcesso/${idProcesso}`
@@ -443,7 +445,6 @@ export class PJEDownloadWorker {
 
       const ca = caRaw.replace(/^"|"$/g, '');
 
-      // 2. Abrir página de autos digitais
       const autosUrl = `${PJE_BASE}/pje/Processo/ConsultaProcesso/Detalhe/listAutosDigitais.seam?idProcesso=${idProcesso}&ca=${ca}${idTaskInstance ? `&idTaskInstance=${idTaskInstance}` : ''}`;
 
       const cookieStr = Object.entries(stored.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
@@ -458,7 +459,6 @@ export class PJEDownloadWorker {
 
       const autosHtml = await autosRes.text();
 
-      // 3. Extrair ViewState
       const viewStateMatch = autosHtml.match(/javax\.faces\.ViewState[^>]+value="([^"]+)"/);
       const viewState = viewStateMatch?.[1];
 
@@ -466,17 +466,12 @@ export class PJEDownloadWorker {
         return { type: 'error', error: `ViewState não encontrado para ${numeroProcesso}` };
       }
 
-      // 4. Extrair ID do botão de download
-      // O botão de download tem padrões como:
-      //   navbar:j_id267, navbar:j_id280 etc.
-      // Estratégia: buscar todos os navbar:j_idN e filtrar pelo contexto
       const downloadBtnId = this.extractDownloadButtonId(autosHtml);
 
       if (!downloadBtnId) {
         return { type: 'error', error: `Botão de download não encontrado para ${numeroProcesso}` };
       }
 
-      // 5. POST AJAX para solicitar download
       const now = new Date();
       const currentDate = `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
 
@@ -516,9 +511,6 @@ export class PJEDownloadWorker {
 
       const responseHtml = await downloadRes.text();
 
-      // 6. Analisar resposta
-
-      // a) URL S3 imediata — window.open('https://...s3...pdf...')
       const s3UrlMatch = responseHtml.match(
         /window\.open\('(https:\/\/[^']*s3[^']*\.pdf[^']*?)'/
       );
@@ -527,7 +519,6 @@ export class PJEDownloadWorker {
         return { type: 'direct', file };
       }
 
-      // b) "será disponibilizado" ou "está sendo gerado" — vai para a fila
       if (
         responseHtml.includes('será disponibilizado') ||
         responseHtml.includes('será gerado') ||
@@ -537,21 +528,16 @@ export class PJEDownloadWorker {
         return { type: 'queued' };
       }
 
-      // c) Verificar se window.open tem URL vazia (significa queued)
-      // Padrão: window.open('') — download será assíncrono
       const emptyWindowOpen = responseHtml.match(/window\.open\(''\)/);
       if (emptyWindowOpen) {
         return { type: 'queued' };
       }
 
-      // d) Se a resposta é muito grande (página completa), provavelmente
-      // é o caso de "será disponibilizado" com HTML completo
       if (responseHtml.length > 5000) {
         console.log(`[PJE-WORKER] ${numeroProcesso}: resposta grande (${responseHtml.length} chars), tratando como queued`);
         return { type: 'queued' };
       }
 
-      // e) Erro
       return { type: 'error', error: `Resposta inesperada ao solicitar download de ${numeroProcesso}` };
 
     } catch (err) {
@@ -564,22 +550,13 @@ export class PJEDownloadWorker {
 
   // ══════════════════════════════════════════════════════════
   // EXTRAIR ID DO BOTÃO DE DOWNLOAD
-  // Busca o botão que dispara o download dos autos digitais.
-  // O botão tem ID no padrão navbar:j_idN e geralmente está
-  // associado a texto "Download" ou "Baixar" ou ao onclick
-  // que gera o download completo.
   // ══════════════════════════════════════════════════════════
 
   private extractDownloadButtonId(html: string): string | null {
-    // Estratégia 1: botão com texto "Download" e ID navbar:j_idN
-    // Padrão: value="Download" ... id="navbar:j_id267" ou vice-versa
     const downloadBtnPatterns = [
-      // Botão com value="Download" no navbar
       /id="(navbar:j_id\d+)"[^>]*value="Download"/i,
       /value="Download"[^>]*id="(navbar:j_id\d+)"/i,
-      // onclick que referencia navbar:j_idN com 'Download' por perto
       /(navbar:j_id\d+)[^}]*'parameters'[^}]*\}[^<]*?Download/i,
-      // Botão com onclick que abre window.open e tem navbar:j_idN
       /(navbar:j_id\d+)(?='[^}]*oncomplete[^}]*window\.open)/i,
     ];
 
@@ -591,10 +568,7 @@ export class PJEDownloadWorker {
       }
     }
 
-    // Estratégia 2: encontrar todos os navbar:j_idN e escolher o
-    // que está associado ao download. O botão de download geralmente
-    // é o que tem onclick com AJAX request e está dentro do navbar form.
-    const allButtons = new Map<string, number>(); // id -> posição
+    const allButtons = new Map<string, number>();
     const btnRegex = /(navbar:j_id(\d+))/g;
     let btnMatch;
     while ((btnMatch = btnRegex.exec(html)) !== null) {
@@ -605,24 +579,19 @@ export class PJEDownloadWorker {
 
     if (allButtons.size === 0) return null;
 
-    // Filtrar apenas os que aparecem como submit buttons (não inputs/selects)
-    // O botão de download geralmente tem o maior j_id numérico no navbar
     const candidates = [...allButtons.keys()]
       .filter(id => {
         const pos = allButtons.get(id)!;
-        // Verificar contexto: deve estar perto de "Download" ou "download"
         const context = html.substring(Math.max(0, pos - 200), Math.min(html.length, pos + 500));
         return /download|baixar|gerar/i.test(context);
       });
 
     if (candidates.length > 0) {
-      // Pegar o que tem o contexto mais relevante
       const best = candidates[candidates.length - 1];
       console.log(`[PJE-WORKER] Botão download encontrado: ${best} (por contexto)`);
       return best;
     }
 
-    // Fallback: pegar o último navbar:j_idN (geralmente é o download)
     const allIds = [...allButtons.keys()];
     const last = allIds[allIds.length - 1];
     console.log(`[PJE-WORKER] Botão download (fallback): ${last}`);
@@ -631,13 +600,6 @@ export class PJEDownloadWorker {
 
   // ══════════════════════════════════════════════════════════
   // COLETAR DOWNLOADS PENDENTES DA ÁREA DE DOWNLOADS
-  //
-  // Fluxo:
-  //  1. Aguardar um tempo inicial para o PJE gerar os arquivos
-  //  2. Polling na API recuperarDownloadsDisponiveis
-  //  3. Para cada download disponível que match com nossos processos,
-  //     gerar URL S3 e baixar
-  //  4. Repetir até todos coletados ou timeout
   // ══════════════════════════════════════════════════════════
 
   private async collectPendingDownloads(
@@ -657,7 +619,6 @@ export class PJEDownloadWorker {
 
     if (pendingList.length === 0) return results;
 
-    // Mapa de processos pendentes: dígitos do número -> info
     const remaining = new Map<string, {
       proc: { idProcesso: number; numeroProcesso: string };
       requestedAt: number;
@@ -670,7 +631,6 @@ export class PJEDownloadWorker {
 
     console.log(`[PJE-WORKER] Aguardando ${remaining.size} download(s) na área de downloads...`);
 
-    // Aguardar tempo inicial
     await this.sleep(DOWNLOAD_POLL_INITIAL);
 
     const startTime = Date.now();
@@ -685,17 +645,14 @@ export class PJEDownloadWorker {
         const downloads = await this.fetchAvailableDownloads(stored);
 
         for (const dl of downloads) {
-          // Verificar se está disponível
           const status = (dl.situacaoDownload || '').toUpperCase();
           if (!DOWNLOAD_AVAILABLE_STATUSES.includes(status)) {
             continue;
           }
 
-          // Verificar se match com algum processo pendente
           const nomeArquivo = dl.nomeArquivo || '';
           const dlDigits = nomeArquivo.replace(/\D/g, '');
 
-          // Tentar match por itens do download
           let matchedDigits: string | null = null;
 
           for (const item of (dl.itens || [])) {
@@ -713,7 +670,6 @@ export class PJEDownloadWorker {
             }
           }
 
-          // Fallback: match pelo nome do arquivo
           if (!matchedDigits) {
             for (const [digits] of remaining) {
               if (dlDigits.includes(digits)) {
@@ -727,7 +683,6 @@ export class PJEDownloadWorker {
             const item = remaining.get(matchedDigits)!;
 
             try {
-              // Gerar URL S3
               const s3Url = await this.generateS3DownloadUrl(stored, dl.hashDownload);
 
               if (s3Url) {
@@ -738,7 +693,6 @@ export class PJEDownloadWorker {
               }
             } catch (err) {
               console.warn(`[PJE-WORKER] Erro ao baixar ${item.proc.numeroProcesso} da área:`, err);
-              // Não remove de remaining — tentará novamente no próximo poll
             }
           }
         }
@@ -747,13 +701,11 @@ export class PJEDownloadWorker {
       }
 
       if (remaining.size > 0) {
-        // Backoff progressivo: 10s, 15s, 20s, 25s, max 30s
         const delay = Math.min(DOWNLOAD_POLL_INTERVAL + (pollCount * 2500), 30000);
         await this.sleep(delay);
       }
     }
 
-    // Processos que não ficaram disponíveis — timeout
     for (const [digits, item] of remaining) {
       results.push({
         processNumber: item.proc.numeroProcesso,
@@ -766,11 +718,6 @@ export class PJEDownloadWorker {
 
   // ══════════════════════════════════════════════════════════
   // BUSCAR DOWNLOADS DISPONÍVEIS NA ÁREA DE DOWNLOADS
-  // Endpoint: GET /pjedocs-api/v1/downloadService/recuperarDownloadsDisponiveis
-  //
-  // NOTA CRÍTICA (v7): o parâmetro idUsuario espera o campo idUsuario
-  // do currentUser (ex: 14552753), NÃO idUsuarioLocalizacaoMagistradoServidor
-  // (ex: 1463158). Confirmado pelo HAR do browser real.
   // ══════════════════════════════════════════════════════════
 
   private async fetchAvailableDownloads(
@@ -784,7 +731,6 @@ export class PJEDownloadWorker {
     try {
       const cookieStr = Object.entries(stored.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
 
-      // CRÍTICO: usar idUsuario (do currentUser), NÃO idUsuarioLocalizacao
       const userId = stored.idUsuario || stored.idUsuarioLocalizacao;
       const url = `${PJE_REST_BASE}/pjedocs-api/v1/downloadService/recuperarDownloadsDisponiveis?idUsuario=${userId}&sistemaOrigem=PRIMEIRA_INSTANCIA`;
 
@@ -811,7 +757,6 @@ export class PJEDownloadWorker {
 
   // ══════════════════════════════════════════════════════════
   // GERAR URL DE DOWNLOAD S3
-  // Endpoint: GET /pjedocs-api/v2/repositorio/gerar-url-download
   // ══════════════════════════════════════════════════════════
 
   private async generateS3DownloadUrl(
@@ -842,16 +787,26 @@ export class PJEDownloadWorker {
 
   // ══════════════════════════════════════════════════════════
   // LISTAR PROCESSOS POR TAREFA
+  //
+  // CORREÇÃO v8 — Paginação:
+  //  - A API PJE usa "page" como offset (0, 500, 1000...),
+  //    NÃO como número de página (0, 1, 2...).
+  //  - Adicionado controle de duplicatas por idProcesso.
+  //  - Adicionado log de progresso da paginação.
+  //  - Adicionado limite de segurança (max 10000 processos).
+  //  - isFavorite é passado diretamente para o endpoint.
   // ══════════════════════════════════════════════════════════
 
   private async listProcessesByTask(
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
     taskName: string,
     isFavorite: boolean,
+    jobId?: string,
   ): Promise<Array<{ idProcesso: number; numeroProcesso: string; idTaskInstance?: number }>> {
     try {
       const encodedName = encodeURIComponent(taskName);
       const endpoint = `painelUsuario/recuperarProcessosTarefaPendenteComCriterios/${encodedName}/${isFavorite}`;
+      const tipoLista = isFavorite ? 'favoritas' : 'todas';
 
       const body = {
         numeroProcesso: '',
@@ -863,7 +818,7 @@ export class PJEDownloadWorker {
         orgao: null,
         ordem: null,
         page: 0,
-        maxResults: 500,
+        maxResults: PAGE_SIZE,
         idTaskInstance: null,
         apelidoSessao: null,
         idTipoSessao: null,
@@ -894,44 +849,91 @@ export class PJEDownloadWorker {
         tipoProcessoDocumento: null,
       };
 
-      console.log(`[PJE-WORKER] Listando processos da tarefa "${taskName}" (favorita=${isFavorite})`);
+      console.log(`[PJE-WORKER] Listando processos da tarefa "${taskName}" (tipo=${tipoLista}, isFavorite=${isFavorite})`);
 
+      // Primeira página
       const result = await this.apiPost<any>(stored, endpoint, body);
       const entities = result?.entities || (Array.isArray(result) ? result : []);
-      const total = result?.count ?? entities.length;
+      const totalFromApi = result?.count ?? entities.length;
 
-      console.log(`[PJE-WORKER] Tarefa "${taskName}": ${entities.length} processos retornados (total: ${total})`);
+      console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): primeira página ${entities.length} processos, total reportado: ${totalFromApi}`);
 
-      const processos = entities.map((p: any) => ({
-        idProcesso: p.idProcesso || 0,
-        numeroProcesso: p.numeroProcesso || '',
-        idTaskInstance: p.idTaskInstance,
-      })).filter((p: any) => p.numeroProcesso);
+      // Usar Set para evitar duplicatas por idProcesso
+      const seenIds = new Set<number>();
+      const processos: Array<{ idProcesso: number; numeroProcesso: string; idTaskInstance?: number }> = [];
 
-      // Paginação
-      if (total > 500 && entities.length >= 500) {
-        let offset = 500;
-        while (offset < total) {
+      for (const p of entities) {
+        if (p.numeroProcesso && !seenIds.has(p.idProcesso)) {
+          seenIds.add(p.idProcesso);
+          processos.push({
+            idProcesso: p.idProcesso || 0,
+            numeroProcesso: p.numeroProcesso,
+            idTaskInstance: p.idTaskInstance,
+          });
+        }
+      }
+
+      // CORREÇÃO v8: Paginação robusta para mais de 500 processos
+      // A API PJE espera "page" como offset (0, 500, 1000...).
+      // Continuamos buscando enquanto houver mais resultados.
+      const MAX_TOTAL_PROCESSOS = 10000; // Limite de segurança
+
+      if (totalFromApi > PAGE_SIZE && entities.length >= PAGE_SIZE) {
+        let offset = PAGE_SIZE;
+        let pageNum = 1;
+        const totalExpected = Math.min(totalFromApi, MAX_TOTAL_PROCESSOS);
+
+        while (offset < totalExpected) {
+          if (jobId && this.service.isCancelled(jobId)) {
+            console.log(`[PJE-WORKER] Listagem cancelada durante paginação`);
+            break;
+          }
+
+          pageNum++;
+          console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): buscando página ${pageNum} (offset=${offset}, coletados=${processos.length}/${totalExpected})`);
+
           const nextBody = { ...body, page: offset };
           const nextResult = await this.apiPost<any>(stored, endpoint, nextBody);
           const nextEntities = nextResult?.entities || (Array.isArray(nextResult) ? nextResult : []);
 
+          if (nextEntities.length === 0) {
+            console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): página ${pageNum} vazia, encerrando paginação`);
+            break;
+          }
+
+          let novosNestaPagina = 0;
           for (const p of nextEntities) {
-            if (p.numeroProcesso) {
+            if (p.numeroProcesso && !seenIds.has(p.idProcesso)) {
+              seenIds.add(p.idProcesso);
               processos.push({
                 idProcesso: p.idProcesso || 0,
                 numeroProcesso: p.numeroProcesso,
                 idTaskInstance: p.idTaskInstance,
               });
+              novosNestaPagina++;
             }
           }
 
-          if (nextEntities.length < 500) break;
-          offset += 500;
+          console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): página ${pageNum} retornou ${nextEntities.length} (${novosNestaPagina} novos), total coletado: ${processos.length}`);
+
+          // Se não houve novos processos, possivelmente a API está retornando duplicatas
+          if (novosNestaPagina === 0) {
+            console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): nenhum processo novo na página ${pageNum}, encerrando`);
+            break;
+          }
+
+          // Se retornou menos que PAGE_SIZE, é a última página
+          if (nextEntities.length < PAGE_SIZE) {
+            console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): última página (${nextEntities.length} < ${PAGE_SIZE})`);
+            break;
+          }
+
+          offset += PAGE_SIZE;
           await this.sleep(500);
         }
       }
 
+      console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): TOTAL FINAL = ${processos.length} processos coletados`);
       return processos;
     } catch (err) {
       console.error(`[PJE-WORKER] Erro ao listar processos da tarefa "${taskName}":`, err);
@@ -961,7 +963,7 @@ export class PJEDownloadWorker {
       while (offset < total) {
         const result = await this.apiGet<any[]>(
           stored,
-          `painelUsuario/etiquetas/${tagId}/processos?limit=500&offset=${offset}`
+          `painelUsuario/etiquetas/${tagId}/processos?limit=${PAGE_SIZE}&offset=${offset}`
         );
 
         const entities = Array.isArray(result) ? result : [];
@@ -974,8 +976,8 @@ export class PJEDownloadWorker {
           }
         }
 
-        if (entities.length < 500) break;
-        offset += 500;
+        if (entities.length < PAGE_SIZE) break;
+        offset += PAGE_SIZE;
         await this.sleep(500);
       }
 

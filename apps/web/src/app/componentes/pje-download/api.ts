@@ -1,8 +1,14 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-const PJE_PREFIX = `${API_BASE}/api/pje/downloads`;
-const AUTH_PREFIX = `${PJE_PREFIX}/auth`;
+// ============================================================
+// apps/web/src/app/componentes/pje-download/api.ts
+// API Client — chamadas HTTP para o backend PJE Download
+//
+// Correções v8:
+//  - criarJob passa isFavorite explicitamente como boolean
+// ============================================================
 
-// ── Erro tipado ──────────────────────────────────────────────
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
+// ── Erro customizado ──────────────────────────────────────
 
 export class ApiError extends Error {
   constructor(
@@ -15,153 +21,177 @@ export class ApiError extends Error {
   }
 }
 
-// ── unwrapResponse: extrai `data` do envelope padronizado ────
+// ── Helper de request ─────────────────────────────────────
 
-async function unwrapResponse<T = unknown>(res: Response): Promise<T> {
-  let body: any;
+async function request<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const url = `${API_BASE}${path}`;
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    // Em produção, usar JWT. Em dev, header mock:
+    'x-user': JSON.stringify({
+      id: 1,
+      name: 'Dr. João Magistrado',
+      role: 'magistrado',
+    }),
+    ...(options.headers as Record<string, string> || {}),
+  };
 
   try {
-    body = await res.json();
-  } catch {
-    throw new ApiError(res.status, `Resposta inválida do servidor (status ${res.status}).`);
+    const res = await fetch(url, {
+      ...options,
+      headers,
+    });
+
+    const body = await res.json().catch(() => null);
+
+    if (!res.ok) {
+      const errorMsg = body?.error?.message || body?.message || `HTTP ${res.status}`;
+      throw new ApiError(res.status, errorMsg, body);
+    }
+
+    // A API retorna { success: true, data: ... }
+    return (body?.data ?? body) as T;
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    if (err instanceof TypeError && err.message === 'Failed to fetch') {
+      throw new ApiError(0, 'Servidor indisponível. Verifique se a API está em execução.');
+    }
+    throw err;
   }
-
-  if (!res.ok || body?.success === false) {
-    const errMsg =
-      body?.error?.message ||
-      body?.message ||
-      `Erro ${res.status}: ${res.statusText}`;
-    throw new ApiError(res.status, errMsg, body);
-  }
-
-  // Extrair data do envelope { success: true, data: T }
-  if (body && typeof body === 'object' && 'success' in body && 'data' in body) {
-    return body.data as T;
-  }
-
-  return body as T;
 }
 
-// ── Header de autenticação ───────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────
 
-function authHeaders(): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    'x-user': JSON.stringify({ id: 1, name: 'Magistrado', role: 'magistrado' }),
-  };
-}
-
-// AUTENTICAÇÃO PJE (chamadas reais via proxy no backend)
-
-export interface LoginResponse {
-  needs2FA: boolean;
-  /** ID da sessão no backend — necessário para 2FA e perfil */
-  sessionId?: string;
-  user?: {
-    idUsuario: number;
-    nomeUsuario: string;
-    login: string;
-    perfil: string;
-    nomePerfil: string;
-    idUsuarioLocalizacaoMagistradoServidor: number;
-  };
-  profiles?: Array<{
-    indice: number;
-    nome: string;
-    orgao: string;
-    favorito: boolean;
-  }>;
-}
-
-export interface ProfileResponse {
-  tasks: Array<{ id: number; nome: string; quantidadePendente: number }>;
-  favoriteTasks: Array<{ id: number; nome: string; quantidadePendente: number }>;
-  tags: Array<{ id: number; nomeTag: string; nomeTagCompleto: string; favorita: boolean }>;
-}
-
-/** POST /auth/login */
-export async function loginPJE(credentials: {
-  cpf: string;
-  password: string;
-}): Promise<LoginResponse> {
-  const res = await fetch(`${AUTH_PREFIX}/login`, {
+export async function loginPJE(params: { cpf: string; password: string }) {
+  return request<{
+    needs2FA: boolean;
+    sessionId?: string;
+    user?: {
+      idUsuario: number;
+      nomeUsuario: string;
+      login: string;
+      perfil: string;
+      nomePerfil: string;
+      idUsuarioLocalizacaoMagistradoServidor: number;
+    };
+    profiles?: Array<{
+      indice: number;
+      nome: string;
+      orgao: string;
+      favorito: boolean;
+    }>;
+  }>('/api/pje/downloads/auth/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(credentials),
+    body: JSON.stringify(params),
   });
-  return unwrapResponse<LoginResponse>(res);
 }
 
-/** POST /auth/2fa */
-export async function enviar2FA(
-  sessionId: string,
-  code: string,
-): Promise<LoginResponse> {
-  const res = await fetch(`${AUTH_PREFIX}/2fa`, {
+export async function enviar2FA(sessionId: string, code: string) {
+  return request<{
+    needs2FA: boolean;
+    sessionId?: string;
+    user?: {
+      idUsuario: number;
+      nomeUsuario: string;
+      login: string;
+      perfil: string;
+      nomePerfil: string;
+      idUsuarioLocalizacaoMagistradoServidor: number;
+    };
+    profiles?: Array<{
+      indice: number;
+      nome: string;
+      orgao: string;
+      favorito: boolean;
+    }>;
+  }>('/api/pje/downloads/auth/2fa', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionId, code }),
   });
-  return unwrapResponse<LoginResponse>(res);
 }
 
-/** POST /auth/profile — agora envia sessionId */
-export async function selecionarPerfil(
-  sessionId: string,
-  profileIndex: number,
-): Promise<ProfileResponse> {
-  const res = await fetch(`${AUTH_PREFIX}/profile`, {
+export async function selecionarPerfil(sessionId: string, profileIndex: number) {
+  return request<{
+    tasks: Array<{ id: number; nome: string; quantidadePendente: number }>;
+    favoriteTasks: Array<{ id: number; nome: string; quantidadePendente: number }>;
+    tags: Array<{ id: number; nomeTag: string; nomeTagCompleto: string; favorita: boolean }>;
+  }>('/api/pje/downloads/auth/profile', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionId, profileIndex }),
   });
-  return unwrapResponse<ProfileResponse>(res);
 }
 
-// JOBS DE DOWNLOAD
+// ── Jobs ──────────────────────────────────────────────────
 
-import type {
-  CreateDownloadJobDTO,
-  DownloadJobResponse,
-  PJEDownloadProgress,
-} from 'shared';
-
-export async function criarJob(dto: CreateDownloadJobDTO): Promise<DownloadJobResponse> {
-  const res = await fetch(PJE_PREFIX, { method: 'POST', headers: authHeaders(), body: JSON.stringify(dto) });
-  return unwrapResponse<DownloadJobResponse>(res);
+interface CriarJobParams {
+  mode: 'by_task' | 'by_tag' | 'by_number';
+  credentials: { cpf: string; password: string };
+  taskName?: string;
+  /**
+   * CORREÇÃO v8: isFavorite é enviado explicitamente.
+   * false = "Todas as Tarefas", true = "Minhas Tarefas (Favoritas)"
+   */
+  isFavorite?: boolean;
+  tagId?: number;
+  tagName?: string;
+  processNumbers?: string[];
+  documentType?: number;
+  pjeProfileIndex?: number;
 }
 
-export async function listarJobs(limit = 20, offset = 0): Promise<{ jobs: DownloadJobResponse[]; total: number }> {
-  const res = await fetch(`${PJE_PREFIX}?limit=${limit}&offset=${offset}`, { headers: authHeaders() });
-  return unwrapResponse<{ jobs: DownloadJobResponse[]; total: number }>(res);
+export async function criarJob(params: CriarJobParams) {
+  // Garante que isFavorite seja boolean explícito (não undefined)
+  const body = {
+    ...params,
+    isFavorite: params.isFavorite === true, // false por padrão
+  };
+
+  return request<{
+    id: string;
+    userId: number;
+    mode: string;
+    status: string;
+    progress: number;
+    totalProcesses: number;
+    successCount: number;
+    failureCount: number;
+    files: any[];
+    errors: any[];
+    createdAt: string;
+  }>('/api/pje/downloads', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
-export async function obterJob(jobId: string): Promise<DownloadJobResponse> {
-  const res = await fetch(`${PJE_PREFIX}/${jobId}`, { headers: authHeaders() });
-  return unwrapResponse<DownloadJobResponse>(res);
+export async function listarJobs(limit = 20, offset = 0) {
+  return request<{
+    jobs: any[];
+    total: number;
+  }>(`/api/pje/downloads?limit=${limit}&offset=${offset}`);
 }
 
-export async function obterProgresso(jobId: string): Promise<PJEDownloadProgress | null> {
-  const res = await fetch(`${PJE_PREFIX}/${jobId}/progress`, { headers: authHeaders() });
-  return unwrapResponse<PJEDownloadProgress | null>(res);
+export async function obterProgresso(jobId: string) {
+  return request<{
+    jobId: string;
+    status: string;
+    progress: number;
+    totalProcesses: number;
+    successCount: number;
+    failureCount: number;
+    message: string;
+    files: any[];
+    errors: any[];
+    timestamp: number;
+  } | null>(`/api/pje/downloads/${jobId}/progress`);
 }
 
-export async function enviar2FAJob(jobId: string, code: string): Promise<{ message: string }> {
-  const res = await fetch(`${PJE_PREFIX}/${jobId}/2fa`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ code }) });
-  return unwrapResponse<{ message: string }>(res);
-}
-
-export async function cancelarJob(jobId: string): Promise<{ message: string }> {
-  const res = await fetch(`${PJE_PREFIX}/${jobId}`, { method: 'DELETE', headers: authHeaders() });
-  return unwrapResponse<{ message: string }>(res);
-}
-
-export async function obterArquivos(jobId: string): Promise<unknown[]> {
-  const res = await fetch(`${PJE_PREFIX}/${jobId}/files`, { headers: authHeaders() });
-  return unwrapResponse<unknown[]>(res);
-}
-
-export async function obterAuditoria(jobId: string): Promise<unknown[]> {
-  const res = await fetch(`${PJE_PREFIX}/${jobId}/audit`, { headers: authHeaders() });
-  return unwrapResponse<unknown[]>(res);
+export async function cancelarJob(jobId: string) {
+  return request<{ message: string }>(`/api/pje/downloads/${jobId}`, {
+    method: 'DELETE',
+  });
 }
