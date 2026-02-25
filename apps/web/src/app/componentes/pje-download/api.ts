@@ -1,11 +1,3 @@
-// ============================================================
-// apps/web/src/app/componentes/pje-download/api.ts
-// Cliente HTTP para a API PJE Download
-//
-// Todas as funções retornam o conteúdo de `data` já extraído
-// do envelope { success, data, timestamp } via unwrapResponse.
-// ============================================================
-
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 const PJE_PREFIX = `${API_BASE}/api/pje/downloads`;
 const AUTH_PREFIX = `${PJE_PREFIX}/auth`;
@@ -59,9 +51,7 @@ function authHeaders(): Record<string, string> {
   };
 }
 
-// ══════════════════════════════════════════════════════════════
 // AUTENTICAÇÃO PJE (chamadas reais via proxy no backend)
-// ══════════════════════════════════════════════════════════════
 
 export interface LoginResponse {
   needs2FA: boolean;
@@ -128,9 +118,7 @@ export async function selecionarPerfil(
   return unwrapResponse<ProfileResponse>(res);
 }
 
-// ══════════════════════════════════════════════════════════════
 // JOBS DE DOWNLOAD
-// ══════════════════════════════════════════════════════════════
 
 import type {
   CreateDownloadJobDTO,

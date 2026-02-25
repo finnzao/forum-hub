@@ -2,10 +2,14 @@
 // apps/api/src/modules/pje-download/services/pje-auth-proxy.service.ts
 // Proxy de autenticação PJE — login real no SSO do TJBA
 //
-// Correções:
+// Correções v7:
+//  - Extração de perfis reescrita: identifica TODOS os perfis
+//    pela presença de links dtPerfil:N:j_id70, extraindo nome
+//    da <td> que contém o texto descritivo (geralmente a maior)
+//  - Favoritos detectados por ícone star preenchido (classe/src)
+//    na MESMA <tr>, não por j_id66 global
+//  - situacaoDownload aceita 'S' além de 'DISPONIVEL'
 //  - Persiste cookies SSO entre sessões (evita 2FA repetido)
-//  - Segue redirects manualmente para capturar cookies
-//  - Extrai TODOS os perfis da tabela HTML com decode de entidades
 // ============================================================
 
 const PJE_BASE = 'https://pje.tjba.jus.br';
@@ -45,9 +49,6 @@ export interface PJEProfileResult {
 
 // ══════════════════════════════════════════════════════════════
 // COOKIE PERSISTENCE — mantém cookies SSO entre logins
-// Isso evita que o SSO peça 2FA a cada login, pois os cookies
-// de verificação já estão presentes (igual ao browser).
-// Indexado por CPF para suportar múltiplos usuários.
 // ══════════════════════════════════════════════════════════════
 
 const persistentCookies = new Map<string, {
@@ -80,6 +81,7 @@ function savePersistentCookies(cpf: string, cookies: Record<string, string>): vo
 export class PJEAuthProxy {
   private cookies: Record<string, string> = {};
   private idUsuarioLocalizacao = '';
+  private idUsuario = '';
   private cpf = '';
 
   // ══════════════════════════════════════════════════════════
@@ -122,14 +124,13 @@ export class PJEAuthProxy {
 
       // 3. Detectar 2FA
       if (this.detect2FA(loginResult.body, loginResult.finalUrl)) {
-        // Persistir cookies SSO parciais — o SSO pode usar esses cookies
-        // para lembrar que o dispositivo já foi verificado
         this.persistCookies();
 
         const sessionId = this.generateSessionId();
         sessionStore.set(sessionId, {
           cookies: { ...this.cookies },
           idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+          idUsuario: this.idUsuario,
           ssoHtml: loginResult.body,
           ssoFinalUrl: loginResult.finalUrl,
           cpf,
@@ -145,7 +146,6 @@ export class PJEAuthProxy {
 
       const errorMsg = this.extractLoginError(loginResult.body);
       if (!errorMsg) {
-        // Log para debug — ajuda a identificar novos padrões de erro
         console.error(`[PJE-AUTH] Login falhou sem mensagem de erro detectada. URL final: ${loginResult.finalUrl}`);
         console.error(`[PJE-AUTH] HTML snippet (primeiros 500 chars):`, loginResult.body.slice(0, 500));
       }
@@ -168,6 +168,7 @@ export class PJEAuthProxy {
 
       this.cookies = { ...stored.cookies };
       this.idUsuarioLocalizacao = stored.idUsuarioLocalizacao;
+      this.idUsuario = stored.idUsuario || '';
       this.cpf = stored.cpf || '';
 
       const html = stored.ssoHtml || '';
@@ -188,8 +189,6 @@ export class PJEAuthProxy {
       sessionStore.delete(sessionId);
 
       if (this.isLoggedInUrl(result.finalUrl)) {
-        // Persistir cookies — inclui cookies SSO de verificação.
-        // Na próxima vez, o SSO vai reconhecer esses cookies e NÃO pedir 2FA.
         this.persistCookies();
         return await this.validateAndBuildResponse();
       }
@@ -200,6 +199,7 @@ export class PJEAuthProxy {
         sessionStore.set(newSessionId, {
           cookies: { ...this.cookies },
           idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+          idUsuario: this.idUsuario,
           ssoHtml: result.body,
           ssoFinalUrl: result.finalUrl,
           cpf: this.cpf,
@@ -230,6 +230,7 @@ export class PJEAuthProxy {
 
       this.cookies = { ...stored.cookies };
       this.idUsuarioLocalizacao = stored.idUsuarioLocalizacao;
+      this.idUsuario = stored.idUsuario || '';
       this.cpf = stored.cpf || '';
 
       // GET página de perfis
@@ -255,10 +256,14 @@ export class PJEAuthProxy {
       if (user?.idUsuarioLocalizacaoMagistradoServidor) {
         this.idUsuarioLocalizacao = String(user.idUsuarioLocalizacaoMagistradoServidor);
       }
+      if (user?.idUsuario) {
+        this.idUsuario = String(user.idUsuario);
+      }
 
       // Atualizar sessão
       stored.cookies = { ...this.cookies };
       stored.idUsuarioLocalizacao = this.idUsuarioLocalizacao;
+      stored.idUsuario = this.idUsuario;
       this.persistCookies();
 
       // Carregar tarefas + etiquetas
@@ -297,11 +302,13 @@ export class PJEAuthProxy {
     }
 
     this.idUsuarioLocalizacao = String(user.idUsuarioLocalizacaoMagistradoServidor || '');
+    this.idUsuario = String(user.idUsuario || '');
 
     const sessionId = this.generateSessionId();
     sessionStore.set(sessionId, {
       cookies: { ...this.cookies },
       idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+      idUsuario: this.idUsuario,
       cpf: this.cpf,
     });
 
@@ -323,7 +330,15 @@ export class PJEAuthProxy {
   }
 
   // ══════════════════════════════════════════════════════════
-  // EXTRACT PROFILES — reescrito para pegar TODOS os perfis
+  // EXTRACT PROFILES — v6: reescrito para pegar TODOS os perfis
+  //
+  // Estratégia:
+  //  1. Encontra o <tbody> da tabela dtPerfil
+  //  2. Separa cada <tr> cuidadosamente
+  //  3. Para cada <tr>, extrai o índice real via dtPerfil:N:j_id70
+  //  4. Detecta favorito pela presença de ícone star preenchido
+  //     OU pelo link j_id66 (favorito do perfil ativo) NA MESMA row
+  //  5. Extrai o nome da <td> mais descritiva (texto mais longo)
   // ══════════════════════════════════════════════════════════
 
   private async extractProfiles(): Promise<PJELoginResult['profiles']> {
@@ -334,101 +349,176 @@ export class PJEAuthProxy {
 
       console.log(`[PJE-AUTH] dev.seam HTML: ${html.length} chars`);
 
-      // ─── Estratégia principal: Encontrar tbody da tabela de perfis ───
-      // e iterar cada <tr> em ordem
-      const tbodyMatch = html.match(
-        /<tbody[^>]*id="papeisUsuarioForm:dtPerfil:tb"[^>]*>([\s\S]*?)<\/tbody>/i
-      );
+      // ─── Estratégia principal: encontrar TODOS os links dtPerfil:N:j_id70 ───
+      // e para cada índice, extrair a <tr> correspondente completa
 
-      if (tbodyMatch) {
-        const tbodyHtml = tbodyMatch[1];
+      // Passo 1: encontrar todos os índices únicos de perfis
+      const indexSet = new Set<number>();
+      const indexRegex = /papeisUsuarioForm:dtPerfil:(\d+):j_id70/g;
+      let idxMatch;
+      while ((idxMatch = indexRegex.exec(html)) !== null) {
+        indexSet.add(parseInt(idxMatch[1], 10));
+      }
+      const allIndices = [...indexSet].sort((a, b) => a - b);
 
-        // Separar as <tr> — cada uma é um perfil
-        // Usar split ao invés de regex para evitar problemas com greedy matching
-        const rows = tbodyHtml.split(/<tr[^>]*>/i).slice(1); // primeiro split é antes do primeiro <tr>
+      console.log(`[PJE-AUTH] Índices de perfis encontrados: [${allIndices.join(', ')}]`);
 
-        for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
-          const rowHtml = rows[rowIdx].split('</tr>')[0] || rows[rowIdx];
+      if (allIndices.length === 0) {
+        console.warn('[PJE-AUTH] Nenhum índice de perfil encontrado no HTML');
+        return [];
+      }
 
-          // Extrair o índice real do perfil a partir do link dtPerfil:N:j_id70
-          // IMPORTANTE: usar `:j_id` como boundary para evitar confundir dtPerfil:1 com dtPerfil:10
-          const idxMatch = rowHtml.match(/dtPerfil:(\d+):j_id/);
-          const idx = idxMatch ? parseInt(idxMatch[1], 10) : rowIdx;
+      // Passo 2: para cada índice, encontrar a <tr> que contém o link
+      for (const idx of allIndices) {
+        // Encontrar o link dtPerfil:N:j_id70 no HTML
+        const linkPattern = `papeisUsuarioForm:dtPerfil:${idx}:j_id70`;
+        const linkPos = html.indexOf(linkPattern);
+        if (linkPos < 0) continue;
 
-          // Verificar se é favorito (estrela preenchida)
-          const isFavorito = rowHtml.includes('j_id66') ||
-            rowHtml.includes('ui-icon-star') ||
-            rowHtml.includes('star-filled') ||
-            /class="[^"]*favorit/i.test(rowHtml);
+        // Voltar até o <tr> mais próximo que abre esta row
+        const beforeLink = html.substring(Math.max(0, linkPos - 3000), linkPos);
+        const trOpenIdx = beforeLink.lastIndexOf('<tr');
+        if (trOpenIdx < 0) continue;
 
-          // Extrair todas as <td> e seus textos
-          const tds: string[] = [];
-          const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-          let tdMatch;
-          while ((tdMatch = tdRegex.exec(rowHtml)) !== null) {
-            const text = this.decodeHtmlEntities(this.stripHtml(tdMatch[1]).trim());
-            // Ignorar células vazias, ícones ou botões
-            if (text.length > 3 && !/^selecionar$/i.test(text)) {
-              tds.push(text);
+        const trStart = Math.max(0, linkPos - 3000) + trOpenIdx;
+
+        // Encontrar o </tr> que fecha esta row
+        const afterTrStart = html.substring(trStart);
+        const trCloseMatch = afterTrStart.match(/<\/tr>/i);
+        if (!trCloseMatch || trCloseMatch.index === undefined) continue;
+
+        const rowHtml = afterTrStart.substring(0, trCloseMatch.index + 5);
+
+        // Passo 3: detectar favorito dentro desta <tr>
+        // Favorito pode ser indicado por:
+        //  - Link j_id66 na mesma row (perfil favorito com link de "desfavoritar")
+        //  - Ícone de estrela preenchida (img com star amarela, ou classe star-filled)
+        //  - Classe CSS com "favorit" na mesma row
+        const isFavorito =
+          rowHtml.includes('j_id66') ||
+          // Estrela preenchida como imagem (ex: star_yellow, star_filled, star-on)
+          /src="[^"]*star[^"]*(?:yellow|filled|on|active)[^"]*"/i.test(rowHtml) ||
+          /src="[^"]*(?:yellow|filled|on|active)[^"]*star[^"]*"/i.test(rowHtml) ||
+          // Ícone preenchido via CSS class
+          /class="[^"]*(?:ui-icon-star\b|star-filled|favorit|favoritado)/i.test(rowHtml) ||
+          // Ícone de estrela RichFaces — star preenchida vs vazia
+          // A estrela vazia geralmente tem "j_id68" ou similar, a preenchida tem "j_id66"
+          // Verificar se a imagem/ícone de estrela tem src/class indicando "preenchida"
+          ((): boolean => {
+            // Buscar todas as <img> ou <span> com star na row
+            const starImgs = rowHtml.match(/<(?:img|span)[^>]*(?:star|favorit)[^>]*>/gi) || [];
+            for (const img of starImgs) {
+              // Se a imagem de estrela tem atributos indicando "ativa"
+              if (/(?:star_on|star-on|yellow|gold|filled|active|favorit)/i.test(img)) {
+                return true;
+              }
+            }
+            return false;
+          })();
+
+        // Passo 4: extrair nome do perfil
+        // Coletar todas as <td> com texto significativo
+        const tds: string[] = [];
+        const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+        let tdMatch;
+        while ((tdMatch = tdRegex.exec(rowHtml)) !== null) {
+          const rawText = tdMatch[1];
+          const text = this.decodeHtmlEntities(this.stripHtml(rawText).trim());
+          // Ignorar células vazias, ícones, botões, ou texto muito curto
+          if (text.length > 3 &&
+              !/^selecionar$/i.test(text) &&
+              !/^favorit/i.test(text) &&
+              !/^\s*$/.test(text)) {
+            tds.push(text);
+          }
+        }
+
+        // O nome do perfil é a célula com texto mais longo
+        // (contém "ORGAO / Papel / Cargo")
+        let nome = '';
+        if (tds.length > 0) {
+          nome = tds.sort((a, b) => b.length - a.length)[0];
+        }
+
+        if (!nome) nome = `Perfil ${idx}`;
+
+        // Passo 5: extrair órgão do nome (primeira parte antes de " / ")
+        let orgao = '';
+        const parts = nome.split(' / ');
+        if (parts.length >= 2) {
+          orgao = parts[0].trim();
+        }
+
+        profiles.push({ indice: idx, nome, orgao, favorito: isFavorito });
+      }
+
+      // ─── Passo 6: Extrair perfil ativo/favorito do <thead> ───
+      // O perfil ativo aparece no <thead> com link j_id66 e ícone de
+      // estrela preenchida (favorite-16x16.png SEM -disabled).
+      // Este perfil NÃO tem dtPerfil:N:j_id70, então não é capturado
+      // pelo loop acima. Precisamos adicioná-lo manualmente.
+      const theadMatch = html.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i);
+      if (theadMatch) {
+        const thead = theadMatch[1];
+        // Verificar se tem j_id66 (link de favorito ativo)
+        const hasJ66 = thead.includes('j_id66');
+        // Verificar se tem estrela preenchida (não disabled)
+        const hasActiveStar =
+          thead.includes('favorite-16x16.png') &&
+          !thead.includes('favorite-16x16-disabled');
+
+        if (hasJ66 || hasActiveStar) {
+          // Extrair nome do perfil ativo
+          const j66NameMatch = thead.match(/j_id66[^>]*>([^<]+)/);
+          let activeName = j66NameMatch
+            ? this.decodeHtmlEntities(j66NameMatch[1].trim())
+            : '';
+
+          // Se não encontrou pelo j_id66, buscar a <td> mais longa no thead
+          if (!activeName) {
+            const theadTds: string[] = [];
+            const theadTdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+            let theadTdMatch;
+            while ((theadTdMatch = theadTdRegex.exec(thead)) !== null) {
+              const text = this.decodeHtmlEntities(this.stripHtml(theadTdMatch[1]).trim());
+              if (text.length > 3) theadTds.push(text);
+            }
+            if (theadTds.length > 0) {
+              activeName = theadTds.sort((a, b) => b.length - a.length)[0];
             }
           }
 
-          // O nome do perfil é o texto mais longo
-          let nome = '';
-          if (tds.length > 0) {
-            nome = tds.sort((a, b) => b.length - a.length)[0];
+          if (activeName) {
+            // Verificar se já não foi capturado nos profiles do tbody
+            const alreadyExists = profiles.some(
+              (p) => p.nome === activeName || p.nome.includes(activeName) || activeName.includes(p.nome)
+            );
+
+            if (!alreadyExists) {
+              let activeOrgao = '';
+              const activeParts = activeName.split(' / ');
+              if (activeParts.length >= 2) {
+                activeOrgao = activeParts[0].trim();
+              }
+
+              // Índice -1 indica perfil ativo (do thead, sem dtPerfil index)
+              profiles.unshift({
+                indice: -1,
+                nome: activeName,
+                orgao: activeOrgao,
+                favorito: true,
+              });
+
+              console.log(`[PJE-AUTH] Perfil ativo do <thead> adicionado: ⭐ ${activeName}`);
+            }
           }
-
-          if (!nome) nome = `Perfil ${idx}`;
-
-          profiles.push({ indice: idx, nome, orgao: '', favorito: isFavorito });
         }
       }
 
-      // ─── Fallback: buscar links dtPerfil:N:j_id70 individualmente ───
-      if (profiles.length === 0) {
-        // Encontrar todos os índices únicos usando o boundary :j_id
-        const indexSet = new Set<number>();
-        const indexRegex = /papeisUsuarioForm:dtPerfil:(\d+):j_id/g;
-        let idxMatch;
-        while ((idxMatch = indexRegex.exec(html)) !== null) {
-          indexSet.add(parseInt(idxMatch[1], 10));
-        }
-        const allIndices = [...indexSet].sort((a, b) => a - b);
-
-        console.log(`[PJE-AUTH] Fallback: índices encontrados: ${allIndices.join(', ')}`);
-
-        for (const idx of allIndices) {
-          // Buscar <td> imediatamente antes do link dtPerfil:N:j_id70
-          const contextPattern = new RegExp(
-            `<td[^>]*>([\\s\\S]{5,400}?)<\\/td>[\\s\\S]{0,300}?papeisUsuarioForm:dtPerfil:${idx}:j_id70`,
-            'i'
-          );
-          const ctxMatch = html.match(contextPattern);
-          let nome = ctxMatch?.[1]
-            ? this.decodeHtmlEntities(this.stripHtml(ctxMatch[1]).trim())
-            : `Perfil ${idx}`;
-
-          profiles.push({ indice: idx, nome, orgao: '', favorito: false });
-        }
-      }
-
-      // ─── Parse orgao do nome se contém " / " ───
-      for (const p of profiles) {
-        const parts = p.nome.split(' / ');
-        if (parts.length >= 2) {
-          p.orgao = parts[0].trim();
-        }
-      }
-
-      // Marcar favorito pelo link j_id66 (perfil padrão/ativo)
-      if (html.includes('dtPerfil:j_id66') && !profiles.some(p => p.favorito)) {
-        if (profiles.length > 0) profiles[0].favorito = true;
-      }
-
+      // ─── Log resultado ───
       console.log(`[PJE-AUTH] Perfis extraídos: ${profiles.length}`);
       for (const p of profiles) {
-        console.log(`  [${p.indice}] ${p.favorito ? '⭐ ' : ''}${p.nome}`);
+        console.log(`  [${p.indice}] ${p.favorito ? '⭐ ' : '   '}${p.nome}`);
       }
 
       return profiles;
@@ -448,6 +538,7 @@ export class PJEAuthProxy {
 
     this.cookies = { ...stored.cookies };
     this.idUsuarioLocalizacao = stored.idUsuarioLocalizacao;
+    this.idUsuario = stored.idUsuario || '';
 
     const page = await this.followGet(`${PJE_BASE}/pje/ng2/dev.seam`);
     return page.body;
@@ -607,18 +698,14 @@ export class PJEAuthProxy {
   }
 
   private extractLoginError(html: string): string | null {
-    // Keycloak SSO error patterns
     const patterns: Array<{ regex: RegExp; message?: string }> = [
-      // Keycloak specific error spans
       { regex: /class="[^"]*kc-feedback-text[^"]*"[^>]*>([^<]+)/i },
       { regex: /id="kc-error-message"[^>]*>([^<]+)/i },
       { regex: /class="[^"]*login-pf-error[^"]*"[^>]*>([^<]+)/i },
-      // Generic error/alert divs
       { regex: /class="[^"]*alert-error[^"]*"[^>]*>([^<]+)/i },
       { regex: /class="[^"]*error-message[^"]*"[^>]*>([^<]+)/i },
       { regex: /class="[^"]*error[^"]*"[^>]*>([^<]+)/i },
       { regex: /class="[^"]*alert[^"]*"[^>]*>([^<]+)/i },
-      // Known error strings (return fixed Portuguese message)
       { regex: /Invalid username or password/i, message: 'CPF ou senha incorretos.' },
       { regex: /invalid.*credentials/i, message: 'CPF ou senha incorretos.' },
       { regex: /Usuário ou senha inválidos/i, message: 'CPF ou senha incorretos.' },
@@ -632,15 +719,12 @@ export class PJEAuthProxy {
     for (const { regex, message } of patterns) {
       const match = html.match(regex);
       if (match) {
-        // Se tem mensagem fixa, usa ela
         if (message) return message;
-        // Senão, usa o texto capturado (limpo)
         const text = this.decodeHtmlEntities((match[1] || '').trim());
         if (text.length > 2 && text.length < 200) return text;
       }
     }
 
-    // Se a URL final contém error ou login_required, é erro de credenciais
     return null;
   }
 
@@ -652,7 +736,6 @@ export class PJEAuthProxy {
   private extractHiddenFields(html: string, baseUrl: string): Record<string, string> {
     const fields: Record<string, string> = {};
 
-    // Campos hidden (name antes e depois de type)
     for (const regex of [
       /<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]*)"/gi,
       /<input[^>]+name="([^"]+)"[^>]+type="hidden"[^>]+value="([^"]*)"/gi,
@@ -663,7 +746,6 @@ export class PJEAuthProxy {
       }
     }
 
-    // Parâmetros do action URL
     const actionMatch = html.match(/action="([^"]+)"/);
     if (actionMatch) {
       try {
@@ -694,10 +776,10 @@ export class PJEAuthProxy {
 
   private stripHtml(html: string): string {
     return html
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')  // remover scripts
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')    // remover styles
-      .replace(/<[^>]+>/g, '')                            // remover tags
-      .replace(/\s+/g, ' ')                               // normalizar espaços
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
       .trim();
   }
 
@@ -749,6 +831,7 @@ export class PJEAuthProxy {
 interface StoredSession {
   cookies: Record<string, string>;
   idUsuarioLocalizacao: string;
+  idUsuario: string;
   ssoHtml?: string;
   ssoFinalUrl?: string;
   cpf?: string;
