@@ -1,7 +1,6 @@
 // ============================================================
 // apps/api/src/modules/pje-download/repositories/pje-download.repository.memory.ts
 // Repositório IN-MEMORY — substitui o PostgreSQL
-// Os dados vivem apenas enquanto o servidor está rodando.
 // ============================================================
 
 import type {
@@ -122,7 +121,6 @@ export class PJEDownloadRepositoryMemory {
     return this.audit.get(jobId) ?? [];
   }
 
-  // Estatísticas para o health check
   getStats() {
     const jobs = [...this.jobs.values()];
     return {
@@ -149,6 +147,8 @@ export class PJEDownloadRepositoryMemory {
       createdAt: job.createdAt.toISOString(),
       startedAt: job.startedAt?.toISOString(),
       completedAt: job.completedAt?.toISOString(),
-    };
+      // Worker precisa dos params internos (credenciais, taskName, etc.)
+      params: job.params,
+    } as DownloadJobResponse & { params: Record<string, unknown> };
   }
 }

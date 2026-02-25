@@ -1,260 +1,179 @@
 // ============================================================
-// app/componentes/pje-download/api.ts
-// Camada de serviço para comunicação com a API PJE
-// Todas as chamadas são logadas pelo logger em modo dev
+// apps/web/src/app/componentes/pje-download/api.ts
+// Cliente HTTP para a API PJE Download
+//
+// Todas as funções retornam o conteúdo de `data` já extraído
+// do envelope { success, data, timestamp } via unwrapResponse.
 // ============================================================
 
-import type {
-  DownloadJobResponse,
-  PJEDownloadProgress,
-  PJEDownloadMode,
-  UsuarioPJE,
-  PerfilPJE,
-  TarefaPJE,
-  EtiquetaPJE,
-} from './tipos';
-import { logger } from './logger';
-
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-const MOD = 'API';
+const PJE_PREFIX = `${API_BASE}/api/pje/downloads`;
+const AUTH_PREFIX = `${PJE_PREFIX}/auth`;
 
-// ── Helpers internos ─────────────────────────────────────────
+// ── Erro tipado ──────────────────────────────────────────────
 
-function getAuthHeaders(userId: number, name: string, role: string): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    'x-user': JSON.stringify({ id: userId, name, role }),
-  };
-}
-
-// TODO: Em produção, obter do contexto de autenticação
-const CURRENT_USER = { id: 1, name: 'Dr. João Magistrado', role: 'magistrado' };
-
-/**
- * Formata detalhes do erro para exibição nos logs
- */
-function formatErrorDetails(err: unknown): { message: string; details: Record<string, unknown> } {
-  if (err instanceof TypeError && err.message === 'Failed to fetch') {
-    return {
-      message: `Servidor indisponível (${API_BASE}). Verifique se a API está em execução.`,
-      details: {
-        tipo: 'NETWORK_ERROR',
-        causa: 'Failed to fetch — não foi possível conectar ao servidor',
-        url: API_BASE,
-        dica: 'Verifique se o servidor da API está rodando e acessível',
-      },
-    };
-  }
-
-  if (err instanceof DOMException && err.name === 'AbortError') {
-    return {
-      message: 'Requisição cancelada por timeout.',
-      details: { tipo: 'TIMEOUT', causa: err.message },
-    };
-  }
-
-  if (err instanceof Error) {
-    return {
-      message: err.message,
-      details: {
-        tipo: err.name,
-        causa: err.message,
-        stack: err.stack?.split('\n').slice(0, 3).join(' → '),
-      },
-    };
-  }
-
-  return {
-    message: String(err),
-    details: { tipo: 'UNKNOWN', valor: err },
-  };
-}
-
-async function apiRequest<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
-  const url = `${API_BASE}/api/pje/downloads${path}`;
-  const method = options.method || 'GET';
-  const inicio = performance.now();
-
-  logger.debug(MOD, `→ ${method} ${path}`, {
-    url,
-    body: options.body ? JSON.parse(options.body as string) : undefined,
-  });
-
-  const headers = {
-    ...getAuthHeaders(CURRENT_USER.id, CURRENT_USER.name, CURRENT_USER.role),
-    ...(options.headers as Record<string, string>),
-  };
-
-  let res: Response;
-
-  try {
-    res = await fetch(url, { ...options, headers });
-  } catch (err) {
-    const duracao = (performance.now() - inicio).toFixed(0);
-    const { message, details } = formatErrorDetails(err);
-
-    logger.error(MOD, `✗ ${method} ${path} — ${message} (${duracao}ms)`, details);
-
-    throw new ApiError(message, 0, details);
-  }
-
-  const duracao = (performance.now() - inicio).toFixed(0);
-
-  if (!res.ok) {
-    let data: Record<string, unknown> = {};
-    let bodyText = '';
-
-    try {
-      bodyText = await res.text();
-      data = JSON.parse(bodyText);
-    } catch {
-      data = { rawBody: bodyText || '(corpo vazio)' };
-    }
-
-    const errMsg = (data.error as string) || `HTTP ${res.status} ${res.statusText}`;
-
-    logger.error(MOD, `✗ ${method} ${path} → ${res.status} ${res.statusText} (${duracao}ms)`, {
-      status: res.status,
-      statusText: res.statusText,
-      url,
-      resposta: data,
-      headers: Object.fromEntries(res.headers.entries()),
-    });
-
-    throw new ApiError(errMsg, res.status, data);
-  }
-
-  const data = await res.json();
-  logger.debug(MOD, `✓ ${method} ${path} → ${res.status} (${duracao}ms)`, data);
-  return data as T;
-}
-
-/**
- * Erro tipado da API com status HTTP e dados da resposta
- */
 export class ApiError extends Error {
   constructor(
-    message: string,
     public status: number,
-    public data: Record<string, unknown> = {}
+    message: string,
+    public data?: unknown,
   ) {
     super(message);
     this.name = 'ApiError';
   }
 }
 
-// ── Autenticação PJE (proxy via API backend) ─────────────────
+// ── unwrapResponse: extrai `data` do envelope padronizado ────
 
-export interface LoginParams {
+async function unwrapResponse<T = unknown>(res: Response): Promise<T> {
+  let body: any;
+
+  try {
+    body = await res.json();
+  } catch {
+    throw new ApiError(res.status, `Resposta inválida do servidor (status ${res.status}).`);
+  }
+
+  if (!res.ok || body?.success === false) {
+    const errMsg =
+      body?.error?.message ||
+      body?.message ||
+      `Erro ${res.status}: ${res.statusText}`;
+    throw new ApiError(res.status, errMsg, body);
+  }
+
+  // Extrair data do envelope { success: true, data: T }
+  if (body && typeof body === 'object' && 'success' in body && 'data' in body) {
+    return body.data as T;
+  }
+
+  return body as T;
+}
+
+// ── Header de autenticação ───────────────────────────────────
+
+function authHeaders(): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-user': JSON.stringify({ id: 1, name: 'Magistrado', role: 'magistrado' }),
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// AUTENTICAÇÃO PJE (chamadas reais via proxy no backend)
+// ══════════════════════════════════════════════════════════════
+
+export interface LoginResponse {
+  needs2FA: boolean;
+  /** ID da sessão no backend — necessário para 2FA e perfil */
+  sessionId?: string;
+  user?: {
+    idUsuario: number;
+    nomeUsuario: string;
+    login: string;
+    perfil: string;
+    nomePerfil: string;
+    idUsuarioLocalizacaoMagistradoServidor: number;
+  };
+  profiles?: Array<{
+    indice: number;
+    nome: string;
+    orgao: string;
+    favorito: boolean;
+  }>;
+}
+
+export interface ProfileResponse {
+  tasks: Array<{ id: number; nome: string; quantidadePendente: number }>;
+  favoriteTasks: Array<{ id: number; nome: string; quantidadePendente: number }>;
+  tags: Array<{ id: number; nomeTag: string; nomeTagCompleto: string; favorita: boolean }>;
+}
+
+/** POST /auth/login */
+export async function loginPJE(credentials: {
   cpf: string;
   password: string;
-}
-
-export interface LoginResult {
-  needs2FA: boolean;
-  user?: UsuarioPJE;
-  profiles?: PerfilPJE[];
-}
-
-export async function loginPJE(params: LoginParams): Promise<LoginResult> {
-  return logger.time(MOD, 'loginPJE', async () => {
-    return apiRequest<LoginResult>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify(params),
-    });
+}): Promise<LoginResponse> {
+  const res = await fetch(`${AUTH_PREFIX}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(credentials),
   });
+  return unwrapResponse<LoginResponse>(res);
 }
 
-export async function enviar2FA(jobIdOuSessionId: string, code: string): Promise<LoginResult> {
-  return logger.time(MOD, 'enviar2FA', async () => {
-    return apiRequest<LoginResult>('/auth/2fa', {
-      method: 'POST',
-      body: JSON.stringify({ sessionId: jobIdOuSessionId, code }),
-    });
+/** POST /auth/2fa */
+export async function enviar2FA(
+  sessionId: string,
+  code: string,
+): Promise<LoginResponse> {
+  const res = await fetch(`${AUTH_PREFIX}/2fa`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, code }),
   });
+  return unwrapResponse<LoginResponse>(res);
 }
 
-export async function selecionarPerfil(indicePerfil: number): Promise<{
-  tasks: TarefaPJE[];
-  favoriteTasks: TarefaPJE[];
-  tags: EtiquetaPJE[];
-}> {
-  return logger.time(MOD, `selecionarPerfil(${indicePerfil})`, async () => {
-    return apiRequest('/auth/profile', {
-      method: 'POST',
-      body: JSON.stringify({ profileIndex: indicePerfil }),
-    });
+/** POST /auth/profile — agora envia sessionId */
+export async function selecionarPerfil(
+  sessionId: string,
+  profileIndex: number,
+): Promise<ProfileResponse> {
+  const res = await fetch(`${AUTH_PREFIX}/profile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, profileIndex }),
   });
+  return unwrapResponse<ProfileResponse>(res);
 }
 
-// ── Jobs de download ─────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+// JOBS DE DOWNLOAD
+// ══════════════════════════════════════════════════════════════
 
-export interface CreateJobParams {
-  mode: PJEDownloadMode;
-  credentials: { cpf: string; password: string };
-  processNumbers?: string[];
-  taskName?: string;
-  isFavorite?: boolean;
-  tagId?: number;
-  tagName?: string;
-  documentType?: number;
-  pjeProfileIndex?: number;
+import type {
+  CreateDownloadJobDTO,
+  DownloadJobResponse,
+  PJEDownloadProgress,
+} from 'shared';
+
+export async function criarJob(dto: CreateDownloadJobDTO): Promise<DownloadJobResponse> {
+  const res = await fetch(PJE_PREFIX, { method: 'POST', headers: authHeaders(), body: JSON.stringify(dto) });
+  return unwrapResponse<DownloadJobResponse>(res);
 }
 
-export async function criarJob(params: CreateJobParams): Promise<DownloadJobResponse> {
-  return logger.time(MOD, `criarJob(${params.mode})`, async () => {
-    return apiRequest<DownloadJobResponse>('/', {
-      method: 'POST',
-      body: JSON.stringify(params),
-    });
-  });
+export async function listarJobs(limit = 20, offset = 0): Promise<{ jobs: DownloadJobResponse[]; total: number }> {
+  const res = await fetch(`${PJE_PREFIX}?limit=${limit}&offset=${offset}`, { headers: authHeaders() });
+  return unwrapResponse<{ jobs: DownloadJobResponse[]; total: number }>(res);
 }
 
-export async function listarJobs(
-  limit = 20,
-  offset = 0,
-): Promise<{ jobs: DownloadJobResponse[]; total: number }> {
-  return apiRequest(`/?limit=${limit}&offset=${offset}`);
+export async function obterJob(jobId: string): Promise<DownloadJobResponse> {
+  const res = await fetch(`${PJE_PREFIX}/${jobId}`, { headers: authHeaders() });
+  return unwrapResponse<DownloadJobResponse>(res);
 }
 
 export async function obterProgresso(jobId: string): Promise<PJEDownloadProgress | null> {
-  return apiRequest(`/${jobId}/progress`);
+  const res = await fetch(`${PJE_PREFIX}/${jobId}/progress`, { headers: authHeaders() });
+  return unwrapResponse<PJEDownloadProgress | null>(res);
 }
 
-export async function cancelarJob(jobId: string): Promise<void> {
-  return logger.time(MOD, `cancelarJob(${jobId.slice(0, 8)})`, async () => {
-    await apiRequest(`/${jobId}`, { method: 'DELETE' });
-  });
+export async function enviar2FAJob(jobId: string, code: string): Promise<{ message: string }> {
+  const res = await fetch(`${PJE_PREFIX}/${jobId}/2fa`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ code }) });
+  return unwrapResponse<{ message: string }>(res);
 }
 
-export async function enviar2FAJob(jobId: string, code: string): Promise<void> {
-  return logger.time(MOD, `enviar2FAJob(${jobId.slice(0, 8)})`, async () => {
-    await apiRequest(`/${jobId}/2fa`, {
-      method: 'POST',
-      body: JSON.stringify({ code }),
-    });
-  });
+export async function cancelarJob(jobId: string): Promise<{ message: string }> {
+  const res = await fetch(`${PJE_PREFIX}/${jobId}`, { method: 'DELETE', headers: authHeaders() });
+  return unwrapResponse<{ message: string }>(res);
 }
 
-// ── Dados do PJE (tarefas, etiquetas) ────────────────────────
-// Nota: esses endpoints são expostos pela API do backend como
-// proxy autenticado para o PJE REST. Usam a sessão armazenada.
-
-export async function listarTarefas(): Promise<TarefaPJE[]> {
-  return logger.time(MOD, 'listarTarefas', async () => {
-    return apiRequest<TarefaPJE[]>('/pje/tasks');
-  });
+export async function obterArquivos(jobId: string): Promise<unknown[]> {
+  const res = await fetch(`${PJE_PREFIX}/${jobId}/files`, { headers: authHeaders() });
+  return unwrapResponse<unknown[]>(res);
 }
 
-export async function listarTarefasFavoritas(): Promise<TarefaPJE[]> {
-  return logger.time(MOD, 'listarTarefasFavoritas', async () => {
-    return apiRequest<TarefaPJE[]>('/pje/tasks/favorites');
-  });
-}
-
-export async function listarEtiquetas(busca = ''): Promise<EtiquetaPJE[]> {
-  return logger.time(MOD, `listarEtiquetas("${busca}")`, async () => {
-    const qs = busca ? `?search=${encodeURIComponent(busca)}` : '';
-    return apiRequest<EtiquetaPJE[]>(`/pje/tags${qs}`);
-  });
+export async function obterAuditoria(jobId: string): Promise<unknown[]> {
+  const res = await fetch(`${PJE_PREFIX}/${jobId}/audit`, { headers: authHeaders() });
+  return unwrapResponse<unknown[]>(res);
 }

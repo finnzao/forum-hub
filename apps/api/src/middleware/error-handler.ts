@@ -26,7 +26,6 @@ export function errorHandler(
   const statusCode = error.statusCode || 500;
   const code = (error as any).code || 'INTERNAL_ERROR';
 
-  // Log com nível adequado
   if (statusCode >= 500) {
     request.log.error({ err: error, req: request }, 'Erro interno do servidor');
   } else if (statusCode >= 400) {
@@ -45,7 +44,6 @@ export function errorHandler(
     },
   };
 
-  // Em desenvolvimento, inclui detalhes extras
   if (process.env.NODE_ENV !== 'production' && statusCode >= 500) {
     response.error.details = {
       originalMessage: error.message,

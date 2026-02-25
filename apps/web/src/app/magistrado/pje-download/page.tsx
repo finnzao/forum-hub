@@ -2,52 +2,32 @@
 // app/magistrado/pje-download/page.tsx
 // Página de Download PJE — fluxo em etapas (wizard)
 //
-// Etapa 1: Login (CPF + Senha)
-// Etapa 2: 2FA (se necessário)
-// Etapa 3: Seleção de Perfil
-// Etapa 4: Configuração do Download (tarefas/etiquetas reais)
-// + Painel lateral: Histórico de Jobs
-// + Painel inferior: Logs de desenvolvimento
+// Correções v5:
+//  - Polling usa useRef para evitar loop infinito de re-renders
+//  - Polling só roda se há jobs ativos (não fica disparando forever)
+//  - Erro de login mostra mensagem específica do SSO
 // ============================================================
 
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Download, ArrowLeft, RefreshCw, Loader2, LogOut,
+  Download, ArrowLeft, RefreshCw, LogOut,
   Lock, User, ClipboardList, History,
 } from 'lucide-react';
 import Link from 'next/link';
 
 import {
-  // Componentes
-  EtapaLogin,
-  EtapaPerfil,
-  EtapaDownload,
-  CardJob,
-  PainelLogs,
-  // Types
-  type EtapaWizard,
-  type SessaoPJE,
-  type PerfilPJE,
-  type DownloadJobResponse,
-  type PJEDownloadProgress,
-  type ParametrosDownload,
-  type EntradaLog,
-  // Helpers
-  isJobActive,
-  logger,
+  EtapaLogin, EtapaPerfil, EtapaDownload, CardJob, PainelLogs,
+  type EtapaWizard, type SessaoPJE, type PerfilPJE,
+  type DownloadJobResponse, type PJEDownloadProgress,
+  type ParametrosDownload, type EntradaLog,
+  isJobActive, logger,
 } from '../../componentes/pje-download';
 
 import {
-  loginPJE,
-  enviar2FA,
-  selecionarPerfil,
-  criarJob,
-  listarJobs,
-  obterProgresso,
-  cancelarJob,
-  enviar2FAJob,
+  loginPJE, enviar2FA, selecionarPerfil,
+  criarJob, listarJobs, obterProgresso, cancelarJob,
   ApiError,
 } from '../../componentes/pje-download/api';
 
@@ -57,17 +37,16 @@ import { Rodape } from '../../componentes/layout/Rodape';
 // ── Indicador de etapas ──────────────────────────────────────
 
 const ETAPAS_WIZARD: { id: EtapaWizard; rotulo: string; icone: React.ReactNode }[] = [
-  { id: 'login',    rotulo: 'Login',    icone: <Lock size={16} /> },
-  { id: 'perfil',   rotulo: 'Perfil',   icone: <User size={16} /> },
-  { id: 'download', rotulo: 'Download', icone: <ClipboardList size={16} /> },
-  { id: 'historico',rotulo: 'Histórico',icone: <History size={16} /> },
+  { id: 'login',     rotulo: 'Login',     icone: <Lock size={16} /> },
+  { id: 'perfil',    rotulo: 'Perfil',    icone: <User size={16} /> },
+  { id: 'download',  rotulo: 'Download',  icone: <ClipboardList size={16} /> },
+  { id: 'historico', rotulo: 'Histórico', icone: <History size={16} /> },
 ];
 
 function IndicadorEtapas({ etapaAtual }: { etapaAtual: EtapaWizard }) {
   const etapaIdx = ETAPAS_WIZARD.findIndex((e) =>
     e.id === etapaAtual || (etapaAtual === '2fa' && e.id === 'login')
   );
-
   return (
     <div className="flex items-center gap-1">
       {ETAPAS_WIZARD.map((etapa, idx) => {
@@ -75,18 +54,10 @@ function IndicadorEtapas({ etapaAtual }: { etapaAtual: EtapaWizard }) {
         const ativa = idx === etapaIdx;
         return (
           <React.Fragment key={etapa.id}>
-            {idx > 0 && (
-              <div className={`w-8 h-0.5 ${concluida ? 'bg-emerald-400' : 'bg-slate-200'}`} />
-            )}
-            <div
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-colors ${
-                ativa
-                  ? 'bg-slate-900 text-white'
-                  : concluida
-                    ? 'bg-emerald-50 text-emerald-700'
-                    : 'bg-slate-100 text-slate-400'
-              }`}
-            >
+            {idx > 0 && <div className={`w-8 h-0.5 ${concluida ? 'bg-emerald-400' : 'bg-slate-200'}`} />}
+            <div className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-colors ${
+              ativa ? 'bg-slate-900 text-white' : concluida ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-400'
+            }`}>
               {etapa.icone}
               <span className="hidden md:inline">{etapa.rotulo}</span>
             </div>
@@ -97,114 +68,66 @@ function IndicadorEtapas({ etapaAtual }: { etapaAtual: EtapaWizard }) {
   );
 }
 
-// ── Hook de logs de UI ───────────────────────────────────────
+// ── Helpers de erro ──────────────────────────────────────────
 
-let logIdCounter = 0;
-
-/**
- * Extrai mensagem amigável de um erro, incluindo detalhes quando disponíveis
- */
 function extrairMensagemErro(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.status === 0) {
-      return `Servidor indisponível. Verifique se a API está em execução.`;
-    }
+    if (err.status === 0) return 'Servidor indisponível. Verifique se a API está em execução.';
     return err.message;
   }
-
   if (err instanceof TypeError && err.message === 'Failed to fetch') {
-    return 'Não foi possível conectar ao servidor. Verifique se a API está em execução.';
+    return 'Não foi possível conectar ao servidor.';
   }
-
-  if (err instanceof Error) {
-    return err.message;
-  }
-
+  if (err instanceof Error) return err.message;
   return 'Erro desconhecido.';
 }
 
-/**
- * Extrai dados estruturados do erro para logging
- */
 function extrairDadosErro(err: unknown): Record<string, unknown> {
-  if (err instanceof ApiError) {
-    return {
-      tipo: 'ApiError',
-      status: err.status,
-      mensagem: err.message,
-      dados: err.data,
-    };
-  }
-
-  if (err instanceof TypeError && err.message === 'Failed to fetch') {
-    return {
-      tipo: 'NetworkError',
-      mensagem: 'Servidor inacessível — verifique se a API backend está rodando',
-      causa: err.message,
-    };
-  }
-
-  if (err instanceof Error) {
-    return {
-      tipo: err.name,
-      mensagem: err.message,
-      stack: err.stack?.split('\n').slice(0, 3).join(' → '),
-    };
-  }
-
+  if (err instanceof ApiError) return { tipo: 'ApiError', status: err.status, mensagem: err.message, dados: err.data };
+  if (err instanceof Error) return { tipo: err.name, mensagem: err.message };
   return { tipo: 'Unknown', valor: String(err) };
 }
 
+// ── Hook de logs ─────────────────────────────────────────────
+
+let logIdCounter = 0;
+
 function useUiLogs() {
   const [logs, setLogs] = useState<EntradaLog[]>([]);
-
-  const addLog = useCallback(
-    (nivel: EntradaLog['nivel'], modulo: string, mensagem: string, dados?: unknown) => {
-      const entry: EntradaLog = {
-        id: ++logIdCounter,
-        timestamp: new Date().toLocaleTimeString('pt-BR', {
-          hour: '2-digit', minute: '2-digit', second: '2-digit',
-        }),
-        nivel,
-        modulo,
-        mensagem,
-        dados,
-      };
-      setLogs((prev) => [entry, ...prev].slice(0, 200)); // max 200
-
-      // Também envia para o console logger
-      logger[nivel](modulo, mensagem, dados);
-    },
-    [],
-  );
-
+  const addLog = useCallback((nivel: EntradaLog['nivel'], modulo: string, mensagem: string, dados?: unknown) => {
+    const entry: EntradaLog = {
+      id: ++logIdCounter,
+      timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      nivel, modulo, mensagem, dados,
+    };
+    setLogs((prev) => [entry, ...prev].slice(0, 200));
+    logger[nivel](modulo, mensagem, dados);
+  }, []);
   const limpar = useCallback(() => setLogs([]), []);
-
   return { logs, addLog, limpar };
 }
 
 // ── Componente principal ─────────────────────────────────────
 
 export default function PaginaDownloadPJE() {
-  // Wizard state
   const [etapa, setEtapa] = useState<EtapaWizard>('login');
   const [sessao, setSessao] = useState<SessaoPJE>({ autenticado: false });
   const [credenciais, setCredenciais] = useState<{ cpf: string; password: string } | null>(null);
 
-  // UI state
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  // Jobs state
   const [jobs, setJobs] = useState<DownloadJobResponse[]>([]);
   const [mapaProgresso, setMapaProgresso] = useState<Record<string, PJEDownloadProgress>>({});
   const [jobExpandido, setJobExpandido] = useState<string | null>(null);
-  const [mostrarHistorico, setMostrarHistorico] = useState(false);
 
-  // Logs
   const { logs, addLog, limpar: limparLogs } = useUiLogs();
 
-  // ── ETAPA 1: Login ─────────────────────────────────────────
+  // Ref para jobs no polling — evita recriar callbacks e causar loops
+  const jobsRef = useRef(jobs);
+  jobsRef.current = jobs;
+
+  // ── ETAPA 1: Login (real) ──────────────────────────────────
 
   const handleLogin = useCallback(async (cpf: string, senha: string) => {
     setCarregando(true);
@@ -214,11 +137,10 @@ export default function PaginaDownloadPJE() {
     try {
       const result = await loginPJE({ cpf, password: senha });
 
-      // Após unwrapResponse(), result é o conteúdo de `data`:
-      // { needs2FA, user, profiles } — sem campo `success`
       if (result.needs2FA) {
         addLog('warn', 'AUTH', '2FA necessário — aguardando código via email');
         setCredenciais({ cpf, password: senha });
+        setSessao((prev) => ({ ...prev, sessionId: result.sessionId }));
         setEtapa('2fa');
       } else if (result.user) {
         addLog('success', 'AUTH', `Login OK — ${result.user.nomeUsuario}`, {
@@ -228,6 +150,7 @@ export default function PaginaDownloadPJE() {
         });
         setSessao({
           autenticado: true,
+          sessionId: result.sessionId,
           usuario: result.user,
           perfis: result.profiles || [],
         });
@@ -235,7 +158,7 @@ export default function PaginaDownloadPJE() {
 
         if (result.profiles && result.profiles.length > 0) {
           setEtapa('perfil');
-          addLog('info', 'AUTH', `${result.profiles.length} perfis disponíveis`, 
+          addLog('info', 'AUTH', `${result.profiles.length} perfis disponíveis`,
             result.profiles.map(p => ({ nome: p.nome, orgao: p.orgao, indice: p.indice }))
           );
         } else {
@@ -249,15 +172,14 @@ export default function PaginaDownloadPJE() {
       }
     } catch (err: any) {
       const msg = extrairMensagemErro(err);
-      const dados = extrairDadosErro(err);
-      addLog('error', 'AUTH', msg, dados);
+      addLog('error', 'AUTH', msg, extrairDadosErro(err));
       setErro(msg);
     } finally {
       setCarregando(false);
     }
   }, [addLog]);
 
-  // ── ETAPA 2: 2FA ───────────────────────────────────────────
+  // ── ETAPA 2: 2FA (real) ────────────────────────────────────
 
   const handleEnviar2FA = useCallback(async (codigo: string) => {
     setCarregando(true);
@@ -265,52 +187,52 @@ export default function PaginaDownloadPJE() {
     addLog('info', '2FA', `Enviando código: ***${codigo.slice(-2)}`);
 
     try {
-      const result = await enviar2FA('session', codigo);
+      const sid = sessao.sessionId || 'unknown';
+      const result = await enviar2FA(sid, codigo);
 
       if (result.user) {
         addLog('success', '2FA', `Verificado — ${result.user.nomeUsuario}`);
         setSessao({
           autenticado: true,
+          sessionId: result.sessionId || sid,
           usuario: result.user,
           perfis: result.profiles || [],
         });
-
-        if (result.profiles && result.profiles.length > 0) {
-          setEtapa('perfil');
-        } else {
-          setEtapa('download');
-        }
+        setEtapa(result.profiles?.length ? 'perfil' : 'download');
+      } else if (result.needs2FA) {
+        setSessao((prev) => ({ ...prev, sessionId: result.sessionId || prev.sessionId }));
+        setErro('Código inválido ou expirado. Tente novamente.');
+        addLog('warn', '2FA', 'Código inválido — tente novamente');
       } else {
-        const msg = 'Código inválido ou resposta inesperada.';
-        addLog('error', '2FA', msg, { resposta: result });
-        setErro(msg);
+        setErro('Resposta inesperada do servidor.');
+        addLog('error', '2FA', 'Resposta inesperada', { resposta: result });
       }
     } catch (err: any) {
-      const msg = extrairMensagemErro(err);
-      const dados = extrairDadosErro(err);
-      addLog('error', '2FA', msg, dados);
-      setErro(msg);
+      addLog('error', '2FA', extrairMensagemErro(err), extrairDadosErro(err));
+      setErro(extrairMensagemErro(err));
     } finally {
       setCarregando(false);
     }
-  }, [addLog]);
+  }, [addLog, sessao.sessionId]);
 
-  // ── ETAPA 3: Seleção de perfil ─────────────────────────────
+  // ── ETAPA 3: Seleção de perfil (real) ──────────────────────
 
   const handleSelecionarPerfil = useCallback(async (perfil: PerfilPJE) => {
     setCarregando(true);
     setErro(null);
     addLog('info', 'PERFIL', `Selecionando: "${perfil.nome}" (índice ${perfil.indice})`, {
-      nome: perfil.nome,
-      orgao: perfil.orgao,
-      indice: perfil.indice,
-      favorito: perfil.favorito,
+      nome: perfil.nome, orgao: perfil.orgao, indice: perfil.indice,
     });
 
     try {
-      const result = await selecionarPerfil(perfil.indice);
+      const sid = sessao.sessionId;
+      if (!sid) {
+        setErro('Sessão expirada. Faça login novamente.');
+        return;
+      }
 
-      // Após unwrapResponse(), result é { tasks, favoriteTasks, tags }
+      const result = await selecionarPerfil(sid, perfil.indice);
+
       if (result.tasks) {
         addLog('success', 'PERFIL', `Perfil selecionado — ${result.tasks.length} tarefas, ${result.tags.length} etiquetas`, {
           tarefas: result.tasks.length,
@@ -332,104 +254,90 @@ export default function PaginaDownloadPJE() {
         setErro('Falha ao selecionar perfil.');
       }
     } catch (err: any) {
-      const msg = extrairMensagemErro(err);
-      const dados = extrairDadosErro(err);
-      addLog('error', 'PERFIL', msg, dados);
-      setErro(msg);
+      addLog('error', 'PERFIL', extrairMensagemErro(err), extrairDadosErro(err));
+      setErro(extrairMensagemErro(err));
     } finally {
       setCarregando(false);
     }
-  }, [addLog]);
+  }, [addLog, sessao.sessionId]);
 
-  // ── ETAPA 4: Criar job de download ─────────────────────────
+  // ── ETAPA 4: Criar job ─────────────────────────────────────
 
   const handleCriarJob = useCallback(async (params: ParametrosDownload) => {
-    if (!credenciais) {
-      setErro('Sessão expirada. Faça login novamente.');
-      return;
-    }
-
+    if (!credenciais) { setErro('Sessão expirada. Faça login novamente.'); return; }
     setCarregando(true);
     setErro(null);
-    addLog('info', 'JOB', `Criando job: modo=${params.mode}`, {
-      modo: params.mode,
-      tarefa: params.taskName,
-      etiqueta: params.tagName,
-      processos: params.processNumbers?.length,
-      tipoDocumento: params.documentType,
-      perfil: params.pjeProfileIndex,
-    });
+    addLog('info', 'JOB', `Criando job: modo=${params.mode}`, params);
 
     try {
-      const novoJob = await criarJob({
-        ...params,
-        credentials: credenciais,
-      });
-
-      addLog('success', 'JOB', `Job criado: ${novoJob.id.slice(0, 8)}`, {
-        id: novoJob.id,
-        modo: novoJob.mode,
-        status: novoJob.status,
-      });
+      const novoJob = await criarJob({ ...params, credentials: credenciais });
+      addLog('success', 'JOB', `Job criado: ${novoJob.id.slice(0, 8)}`, { id: novoJob.id, modo: novoJob.mode, status: novoJob.status });
       setJobs((prev) => [novoJob, ...prev]);
       setJobExpandido(novoJob.id);
-      setMostrarHistorico(true);
     } catch (err: any) {
-      const msg = extrairMensagemErro(err);
-      const dados = extrairDadosErro(err);
-      addLog('error', 'JOB', msg, dados);
-      setErro(msg);
+      addLog('error', 'JOB', extrairMensagemErro(err), extrairDadosErro(err));
+      setErro(extrairMensagemErro(err));
     } finally {
       setCarregando(false);
     }
   }, [credenciais, addLog]);
 
-  // ── Carregar histórico de jobs ─────────────────────────────
+  // ── Polling de jobs (estável — sem loop) ────────────────────
+  //
+  // useRef para jobs evita recriar callbacks a cada mudança de
+  // estado, o que causava o loop infinito de requests.
+  // Polling só faz requests se existem jobs ativos.
 
   const carregarJobs = useCallback(async () => {
     try {
       const data = await listarJobs(20, 0);
       setJobs(data.jobs || []);
     } catch {
-      // Silencioso — não interrompe o fluxo
+      // silencioso
     }
   }, []);
 
   const carregarProgresso = useCallback(async () => {
-    const ativos = jobs.filter((j) => isJobActive(j.status));
+    const ativos = jobsRef.current.filter((j) => isJobActive(j.status));
+    if (ativos.length === 0) return;
+
     for (const job of ativos) {
       try {
         const p = await obterProgresso(job.id);
         if (p) setMapaProgresso((prev) => ({ ...prev, [job.id]: p }));
       } catch {
-        // Silencioso
+        // silencioso
       }
     }
-  }, [jobs]);
+  }, []);
 
-  // Polling
+  // Polling: carga inicial ao entrar no download, depois a cada 10s
+  // só se existem jobs ativos
   useEffect(() => {
-    if (etapa === 'download' || etapa === 'historico' || mostrarHistorico) {
-      carregarJobs();
-      const interval = setInterval(() => {
+    if (etapa !== 'download') return;
+
+    carregarJobs();
+
+    const interval = setInterval(() => {
+      const temAtivos = jobsRef.current.some((j) => isJobActive(j.status));
+      if (temAtivos) {
         carregarJobs();
         carregarProgresso();
-      }, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [etapa, mostrarHistorico, carregarJobs, carregarProgresso]);
+      }
+    }, 10_000);
 
-  // ── Logout ─────────────────────────────────────────────────
+    return () => clearInterval(interval);
+  }, [etapa, carregarJobs, carregarProgresso]);
+
+  // ── Ações ──────────────────────────────────────────────────
 
   const handleLogout = useCallback(() => {
-    addLog('info', 'AUTH', 'Logout — limpando sessão');
+    addLog('info', 'AUTH', 'Logout');
     setSessao({ autenticado: false });
     setCredenciais(null);
     setEtapa('login');
     setErro(null);
   }, [addLog]);
-
-  // ── Voltar para perfil ─────────────────────────────────────
 
   const handleVoltarPerfil = useCallback(() => {
     addLog('info', 'NAV', 'Voltando para seleção de perfil');
@@ -437,17 +345,14 @@ export default function PaginaDownloadPJE() {
     setErro(null);
   }, [addLog]);
 
-  // ── Cancelar job ───────────────────────────────────────────
-
   const handleCancelar = useCallback(async (jobId: string) => {
     addLog('info', 'JOB', `Cancelando job ${jobId.slice(0, 8)}`);
     try {
       await cancelarJob(jobId);
-      addLog('success', 'JOB', `Job ${jobId.slice(0, 8)} cancelado`);
+      addLog('success', 'JOB', `Cancelado`);
       carregarJobs();
     } catch (err: any) {
-      const msg = extrairMensagemErro(err);
-      addLog('error', 'JOB', `Falha ao cancelar: ${msg}`, extrairDadosErro(err));
+      addLog('error', 'JOB', extrairMensagemErro(err), extrairDadosErro(err));
     }
   }, [addLog, carregarJobs]);
 
@@ -465,7 +370,6 @@ export default function PaginaDownloadPJE() {
       />
 
       <main className="flex-1 max-w-7xl mx-auto px-8 py-8 w-full">
-        {/* ── Header da página ──────────────────────────────── */}
         <div className="mb-8">
           <div className="flex items-center gap-2 text-sm text-slate-600 mb-4">
             <Link href="/magistrado" className="hover:text-slate-900 font-semibold flex items-center gap-1.5">
@@ -485,59 +389,39 @@ export default function PaginaDownloadPJE() {
                 <p className="text-slate-600 text-sm">PJE/TJBA — Processo Judicial Eletrônico</p>
               </div>
             </div>
-
             <div className="flex items-center gap-3">
               <IndicadorEtapas etapaAtual={etapaAtual} />
-
               {sessao.autenticado && (
-                <button
-                  type="button"
-                  onClick={handleLogout}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-red-600 border-2 border-slate-200 hover:border-red-200 transition-colors"
-                >
-                  <LogOut size={12} />
-                  Sair do PJE
+                <button type="button" onClick={handleLogout}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-red-600 border-2 border-slate-200 hover:border-red-200 transition-colors">
+                  <LogOut size={12} /> Sair do PJE
                 </button>
               )}
             </div>
           </div>
         </div>
 
-        {/* ── Conteúdo principal ─────────────────────────────── */}
         {mostrandoDownload ? (
-          /* Layout 2 colunas quando no passo de download */
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
-            {/* Formulário de download */}
             <div className="lg:col-span-3">
               <EtapaDownload
                 perfil={sessao.perfilSelecionado!}
                 tarefas={sessao.tarefas || []}
                 tarefasFavoritas={sessao.tarefasFavoritas || []}
                 etiquetas={sessao.etiquetas || []}
-                carregando={carregando}
-                erro={erro}
-                onCriarJob={handleCriarJob}
-                onVoltar={handleVoltarPerfil}
+                carregando={carregando} erro={erro}
+                onCriarJob={handleCriarJob} onVoltar={handleVoltarPerfil}
               />
             </div>
-
-            {/* Histórico de downloads */}
             <div className="lg:col-span-2">
               <div className="sticky top-8">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">
-                    Downloads
-                  </h3>
+                  <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Downloads</h3>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-400">
-                      {jobs.length} job{jobs.length !== 1 ? 's' : ''}
-                    </span>
-                    <button type="button" onClick={carregarJobs} className="p-1 text-slate-400 hover:text-slate-700 transition-colors">
-                      <RefreshCw size={12} />
-                    </button>
+                    <span className="text-xs text-slate-400">{jobs.length} job{jobs.length !== 1 ? 's' : ''}</span>
+                    <button type="button" onClick={carregarJobs} className="p-1 text-slate-400 hover:text-slate-700"><RefreshCw size={12} /></button>
                   </div>
                 </div>
-
                 {jobs.length === 0 ? (
                   <div className="border-2 border-dashed border-slate-200 p-8 text-center">
                     <Download size={24} className="text-slate-300 mx-auto mb-2" />
@@ -546,16 +430,11 @@ export default function PaginaDownloadPJE() {
                 ) : (
                   <div className="space-y-2 max-h-[calc(100vh-16rem)] overflow-y-auto">
                     {jobs.map((job) => (
-                      <CardJob
-                        key={job.id}
-                        job={job}
-                        progresso={mapaProgresso[job.id]}
+                      <CardJob key={job.id} job={job} progresso={mapaProgresso[job.id]}
                         expandido={jobExpandido === job.id}
                         onAlternarExpansao={() => setJobExpandido(jobExpandido === job.id ? null : job.id)}
                         onCancelar={() => handleCancelar(job.id)}
-                        onAbrir2FA={() => {
-                          addLog('info', '2FA', `2FA solicitado para job ${job.id.slice(0, 8)}`);
-                        }}
+                        onAbrir2FA={() => addLog('info', '2FA', `2FA solicitado para job ${job.id.slice(0, 8)}`)}
                       />
                     ))}
                   </div>
@@ -564,45 +443,24 @@ export default function PaginaDownloadPJE() {
             </div>
           </div>
         ) : (
-          /* Etapas centralizadas (login, 2fa, perfil) */
           <div>
             {(etapa === 'login' || etapa === '2fa') && (
-              <EtapaLogin
-                carregando={carregando}
-                erro={erro}
-                aguardando2FA={etapa === '2fa'}
-                onLogin={handleLogin}
-                onEnviar2FA={handleEnviar2FA}
-              />
+              <EtapaLogin carregando={carregando} erro={erro} aguardando2FA={etapa === '2fa'}
+                onLogin={handleLogin} onEnviar2FA={handleEnviar2FA} />
             )}
-
             {etapa === 'perfil' && sessao.usuario && (
-              <EtapaPerfil
-                usuario={sessao.usuario}
-                perfis={sessao.perfis || []}
-                carregando={carregando}
-                erro={erro}
-                onSelecionar={handleSelecionarPerfil}
-              />
+              <EtapaPerfil usuario={sessao.usuario} perfis={sessao.perfis || []}
+                carregando={carregando} erro={erro} onSelecionar={handleSelecionarPerfil} />
             )}
-
-            {/* Histórico abaixo das etapas centrais (se houver jobs) */}
             {jobs.length > 0 && (
               <div className="mt-12 max-w-2xl mx-auto">
-                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-4">
-                  Downloads Anteriores
-                </h3>
+                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-4">Downloads Anteriores</h3>
                 <div className="space-y-2">
                   {jobs.slice(0, 3).map((job) => (
-                    <CardJob
-                      key={job.id}
-                      job={job}
-                      progresso={mapaProgresso[job.id]}
+                    <CardJob key={job.id} job={job} progresso={mapaProgresso[job.id]}
                       expandido={jobExpandido === job.id}
                       onAlternarExpansao={() => setJobExpandido(jobExpandido === job.id ? null : job.id)}
-                      onCancelar={() => handleCancelar(job.id)}
-                      onAbrir2FA={() => {}}
-                    />
+                      onCancelar={() => handleCancelar(job.id)} onAbrir2FA={() => {}} />
                   ))}
                 </div>
               </div>
@@ -611,11 +469,9 @@ export default function PaginaDownloadPJE() {
         )}
       </main>
 
-      {/* ── Painel de Logs (dev only) ───────────────────────── */}
       <div className="sticky bottom-0 z-40">
         <PainelLogs logs={logs} onLimpar={limparLogs} />
       </div>
-
       <Rodape />
     </div>
   );
