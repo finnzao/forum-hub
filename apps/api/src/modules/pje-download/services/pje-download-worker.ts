@@ -64,15 +64,15 @@ export class PJEDownloadWorker {
     if (!this.running) return;
     try {
       const { jobs } = await this.repository.findJobsByUser(1, 50, 0);
-      const pending = jobs.filter(
-        (j) => j.status === 'pending' && !this.processingJobs.has(j.id)
-      );
+      const pending = jobs.filter((j) => j.status === 'pending' && !this.processingJobs.has(j.id));
       for (const job of pending) {
         this.processJob(job).catch((err) => {
           console.error(`[PJE-WORKER] Erro fatal no job ${job.id.slice(0, 8)}:`, err);
         });
       }
-    } catch { /* silencioso */ }
+    } catch {
+      /* silencioso */
+    }
   }
 
   // PROCESSAMENTO PRINCIPAL DO JOB
@@ -98,51 +98,44 @@ export class PJEDownloadWorker {
       }
 
       // ── 1. Autenticar ──────────────────────────────────────
-      // CORREÇÃO v9: Tentar reutilizar sessão existente do sessionStore
-      // antes de fazer login completo. O usuário já se autenticou na UI,
-      // então a sessão provavelmente ainda é válida. Fazer um segundo login
-      // no SSO pode falhar porque o Keycloak já tem uma sessão ativa com
-      // cookies diferentes (KEYCLOAK_SESSION, KEYCLOAK_IDENTITY, etc.)
+      // BUG 2 (validação dupla de sessão): removida.
+      // Agora:
+      // - Se existir pjeSessionId e estiver no sessionStore, assumimos que já está válida e pronta (UI já autenticou e selecionou perfil).
+      // - Se não existir sessão reaproveitável, fazemos login completo e selecionamos perfil UMA ÚNICA VEZ.
       await this.updateStatus(jobId, 'authenticating', 0, 'Autenticando no PJE...');
 
       const proxy = new PJEAuthProxy();
 
-      // Tentar reutilizar a sessão do fluxo de login da UI
       const existingSessionId = params.pjeSessionId as string | undefined;
       let sessionId: string | undefined;
-      let loginOk = false;
+      let reusedSession = false;
 
       if (existingSessionId) {
         const existingSession = sessionStore.get(existingSessionId);
         if (existingSession) {
-          console.log(`[PJE-WORKER] Job ${shortId} tentando reutilizar sessão: ${existingSessionId.slice(0, 16)}...`);
-          try {
-            // Validar sessão tentando selecionar o perfil
-            const profileIndex = params.pjeProfileIndex ?? 0;
-            const testResult = await proxy.selectProfile(existingSessionId, profileIndex);
-            if (!testResult.error) {
-              sessionId = existingSessionId;
-              loginOk = true;
-              console.log(`[PJE-WORKER] Job ${shortId} sessão reutilizada OK — ${testResult.tasks.length} tarefas`);
-            } else {
-              console.log(`[PJE-WORKER] Job ${shortId} sessão existente falhou: ${testResult.error}`);
-            }
-          } catch (err) {
-            console.log(`[PJE-WORKER] Job ${shortId} sessão existente inválida, fazendo login completo`);
-          }
+          sessionId = existingSessionId;
+          reusedSession = true;
+          console.log(
+            `[PJE-WORKER] Job ${shortId} reutilizando sessão do store: ${existingSessionId.slice(0, 16)}...`,
+          );
         } else {
-          console.log(`[PJE-WORKER] Job ${shortId} sessão ${existingSessionId.slice(0, 16)}... não encontrada no store`);
+          console.log(
+            `[PJE-WORKER] Job ${shortId} sessão ${existingSessionId.slice(0, 16)}... não encontrada no store`,
+          );
         }
       }
 
-      if (!loginOk) {
+      if (!sessionId) {
         console.log(`[PJE-WORKER] Job ${shortId} fazendo login completo...`);
         const loginResult = await proxy.login(cpf, password);
 
         if (this.service.isCancelled(jobId)) return;
 
         if (loginResult.needs2FA) {
-          await this.failJob(jobId, '2FA necessário. Faça login primeiro na interface para validar o dispositivo.');
+          await this.failJob(
+            jobId,
+            '2FA necessário. Faça login primeiro na interface para validar o dispositivo.',
+          );
           return;
         }
 
@@ -153,15 +146,8 @@ export class PJEDownloadWorker {
 
         sessionId = loginResult.sessionId!;
         console.log(`[PJE-WORKER] Job ${shortId} autenticado como ${loginResult.user.nomeUsuario}`);
-      }
 
-      if (!sessionId) {
-        await this.failJob(jobId, 'Não foi possível obter sessão válida.');
-        return;
-      }
-
-      // ── 2. Selecionar perfil (somente se fez login completo) ──
-      if (!loginOk) {
+        // ── 2. Selecionar perfil (somente após login completo) ──
         const profileIndex = params.pjeProfileIndex ?? 0;
         await this.updateStatus(jobId, 'selecting_profile', 5, `Selecionando perfil #${profileIndex}...`);
 
@@ -173,11 +159,25 @@ export class PJEDownloadWorker {
         if (this.service.isCancelled(jobId)) return;
 
         console.log(`[PJE-WORKER] Job ${shortId} perfil selecionado — ${profileResult.tasks.length} tarefas`);
+      } else {
+        // Se estamos reutilizando sessão, NÃO fazemos selectProfile de novo (evita validação dupla / estado inconsistente)
+        // e assumimos que a UI já selecionou o perfil correto para esta sessão.
+        if (reusedSession) {
+          const profileIndex = params.pjeProfileIndex ?? 0;
+          console.log(
+            `[PJE-WORKER] Job ${shortId} sessão reaproveitada — pulando selectProfile (perfil esperado #${profileIndex})`,
+          );
+        }
+      }
+
+      if (!sessionId) {
+        await this.failJob(jobId, 'Não foi possível obter sessão válida.');
+        return;
       }
 
       const stored = sessionStore.get(sessionId);
       if (!stored) {
-        await this.failJob(jobId, 'Sessão perdida após seleção de perfil.');
+        await this.failJob(jobId, 'Sessão não encontrada no store (expirada/limpa).');
         return;
       }
 
@@ -206,10 +206,14 @@ export class PJEDownloadWorker {
           const isFavorite = params.isFavorite === true;
           const tipoLista = isFavorite ? 'Minhas Tarefas (Favoritas)' : 'Todas as Tarefas';
 
-          console.log(`[PJE-WORKER] Job ${shortId} buscando: ${tipoLista} → "${taskName}" (isFavorite=${isFavorite})`);
+          console.log(
+            `[PJE-WORKER] Job ${shortId} buscando: ${tipoLista} → "${taskName}" (isFavorite=${isFavorite})`,
+          );
 
           await this.updateStatus(
-            jobId, 'processing', 10,
+            jobId,
+            'processing',
+            10,
             `Listando processos: ${tipoLista} → "${taskName}"...`,
           );
 
@@ -231,7 +235,11 @@ export class PJEDownloadWorker {
       if (processos.length === 0) {
         await this.updateStatus(jobId, 'completed', 100, 'Nenhum processo encontrado.');
         await this.repository.updateJob({
-          id: jobId, status: 'completed', totalProcesses: 0, successCount: 0, completedAt: new Date(),
+          id: jobId,
+          status: 'completed',
+          totalProcesses: 0,
+          successCount: 0,
+          completedAt: new Date(),
         });
         console.log(`[PJE-WORKER] Job ${shortId} — nenhum processo encontrado`);
         return;
@@ -241,7 +249,10 @@ export class PJEDownloadWorker {
       const total = processos.length;
 
       await this.repository.updateJob({
-        id: jobId, status: 'downloading', totalProcesses: total, startedAt: new Date(),
+        id: jobId,
+        status: 'downloading',
+        totalProcesses: total,
+        startedAt: new Date(),
       });
 
       // ── 4. Download em lotes ───────────────────────────────
@@ -265,9 +276,16 @@ export class PJEDownloadWorker {
         const progressPct = 15 + Math.round((i / total) * 70);
 
         await this.updateStatus(
-          jobId, 'downloading', progressPct,
+          jobId,
+          'downloading',
+          progressPct,
           `Solicitando download ${i + 1}/${total}: ${proc.numeroProcesso}`,
-          proc.numeroProcesso, total, successCount, failureCount, files, errors,
+          proc.numeroProcesso,
+          total,
+          successCount,
+          failureCount,
+          files,
+          errors,
         );
 
         try {
@@ -303,14 +321,19 @@ export class PJEDownloadWorker {
         if (pendingDownloads.length >= DOWNLOAD_BATCH_SIZE || i === processos.length - 1) {
           if (pendingDownloads.length > 0) {
             await this.updateStatus(
-              jobId, 'downloading', progressPct,
+              jobId,
+              'downloading',
+              progressPct,
               `Aguardando ${pendingDownloads.length} download(s) ficarem disponíveis...`,
-              undefined, total, successCount, failureCount, files, errors,
+              undefined,
+              total,
+              successCount,
+              failureCount,
+              files,
+              errors,
             );
 
-            const batchResults = await this.collectPendingDownloads(
-              stored, pendingDownloads, jobId
-            );
+            const batchResults = await this.collectPendingDownloads(stored, pendingDownloads, jobId);
 
             for (const br of batchResults) {
               if (br.file) {
@@ -340,16 +363,21 @@ export class PJEDownloadWorker {
 
       // ── 5. Verificação de integridade ──────────────────────
       await this.updateStatus(
-        jobId, 'checking_integrity', 90,
+        jobId,
+        'checking_integrity',
+        90,
         'Verificando integridade dos downloads...',
-        undefined, total, successCount, failureCount, files, errors,
+        undefined,
+        total,
+        successCount,
+        failureCount,
+        files,
+        errors,
       );
 
-      const downloadedDigits = new Set(
-        files.map(f => f.processNumber.replace(/\D/g, ''))
-      );
+      const downloadedDigits = new Set(files.map((f) => f.processNumber.replace(/\D/g, '')));
 
-      const missingProcesses = processos.filter(proc => {
+      const missingProcesses = processos.filter((proc) => {
         const digits = proc.numeroProcesso.replace(/\D/g, '');
         return !downloadedDigits.has(digits);
       });
@@ -357,9 +385,16 @@ export class PJEDownloadWorker {
       // ── 6. Retries automáticos ─────────────────────────────
       if (missingProcesses.length > 0 && !this.service.isCancelled(jobId)) {
         await this.updateStatus(
-          jobId, 'retrying', 92,
+          jobId,
+          'retrying',
+          92,
           `Retentando ${missingProcesses.length} processo(s) faltante(s)...`,
-          undefined, total, successCount, failureCount, files, errors,
+          undefined,
+          total,
+          successCount,
+          failureCount,
+          files,
+          errors,
         );
 
         for (let retry = 0; retry < 2; retry++) {
@@ -378,13 +413,22 @@ export class PJEDownloadWorker {
               if (result.type === 'direct' && result.file) {
                 files.push(result.file);
                 successCount++;
-                failureCount = Math.max(0, failureCount - 1);
-                errors.splice(errors.findIndex(e => e.processNumber === proc.numeroProcesso), 1);
+
+                // Remove erro anterior desse processo (se existir) sem quebrar quando não existir
+                const errIdx = errors.findIndex((e) => e.processNumber === proc.numeroProcesso);
+                if (errIdx >= 0) {
+                  errors.splice(errIdx, 1);
+                  // Só decrementa failureCount se realmente existia erro registrado
+                  failureCount = Math.max(0, failureCount - 1);
+                }
+
                 missingProcesses.splice(i, 1);
               } else if (result.type === 'queued') {
                 retryPending.push({ proc, requestedAt: Date.now() });
               }
-            } catch { /* continua */ }
+            } catch {
+              /* continua */
+            }
 
             await this.sleep(DOWNLOAD_DELAY);
           }
@@ -396,10 +440,14 @@ export class PJEDownloadWorker {
               if (br.file) {
                 files.push(br.file);
                 successCount++;
-                failureCount = Math.max(0, failureCount - 1);
-                const errIdx = errors.findIndex(e => e.processNumber === br.processNumber);
-                if (errIdx >= 0) errors.splice(errIdx, 1);
-                const missIdx = missingProcesses.findIndex(p => p.numeroProcesso === br.processNumber);
+
+                const errIdx = errors.findIndex((e) => e.processNumber === br.processNumber);
+                if (errIdx >= 0) {
+                  errors.splice(errIdx, 1);
+                  failureCount = Math.max(0, failureCount - 1);
+                }
+
+                const missIdx = missingProcesses.findIndex((p) => p.numeroProcesso === br.processNumber);
                 if (missIdx >= 0) missingProcesses.splice(missIdx, 1);
               }
             }
@@ -408,26 +456,42 @@ export class PJEDownloadWorker {
       }
 
       // ── 7. Finalizar ──────────────────────────────────────
-      const finalStatus: PJEJobStatus =
-        this.service.isCancelled(jobId) ? 'cancelled' :
-          failureCount === 0 ? 'completed' :
-            successCount === 0 ? 'failed' :
-              'partial';
+      const finalStatus: PJEJobStatus = this.service.isCancelled(jobId)
+        ? 'cancelled'
+        : failureCount === 0
+          ? 'completed'
+          : successCount === 0
+            ? 'failed'
+            : 'partial';
 
       await this.repository.updateJob({
-        id: jobId, status: finalStatus, progress: 100,
-        totalProcesses: total, successCount, failureCount,
-        files, errors, completedAt: new Date(),
+        id: jobId,
+        status: finalStatus,
+        progress: 100,
+        totalProcesses: total,
+        successCount,
+        failureCount,
+        files,
+        errors,
+        completedAt: new Date(),
       });
 
       await this.updateStatus(
-        jobId, finalStatus, 100,
+        jobId,
+        finalStatus,
+        100,
         `Concluído: ${successCount}/${total} processos baixados.`,
-        undefined, total, successCount, failureCount, files, errors,
+        undefined,
+        total,
+        successCount,
+        failureCount,
+        files,
+        errors,
       );
 
-      console.log(`[PJE-WORKER] ══════ Job ${shortId} finalizado: ${finalStatus} (${successCount}/${total}) ══════`);
-
+      console.log(
+        `[PJE-WORKER] ══════ Job ${shortId} finalizado: ${finalStatus} (${successCount}/${total}) ══════`,
+      );
     } catch (err) {
       console.error(`[PJE-WORKER] Erro no job ${shortId}:`, err);
       await this.failJob(jobId, err instanceof Error ? err.message : 'Erro interno do worker');
@@ -453,10 +517,7 @@ export class PJEDownloadWorker {
     }
 
     try {
-      const caRaw = await this.apiGet<string>(
-        stored,
-        `painelUsuario/gerarChaveAcessoProcesso/${idProcesso}`
-      );
+      const caRaw = await this.apiGet<string>(stored, `painelUsuario/gerarChaveAcessoProcesso/${idProcesso}`);
 
       if (!caRaw || typeof caRaw !== 'string' || caRaw.length < 10) {
         return { type: 'error', error: `Chave de acesso inválida para ${numeroProcesso}` };
@@ -464,13 +525,15 @@ export class PJEDownloadWorker {
 
       const ca = caRaw.replace(/^"|"$/g, '');
 
-      const autosUrl = `${PJE_BASE}/pje/Processo/ConsultaProcesso/Detalhe/listAutosDigitais.seam?idProcesso=${idProcesso}&ca=${ca}${idTaskInstance ? `&idTaskInstance=${idTaskInstance}` : ''}`;
+      const autosUrl = `${PJE_BASE}/pje/Processo/ConsultaProcesso/Detalhe/listAutosDigitais.seam?idProcesso=${idProcesso}&ca=${ca}${
+        idTaskInstance ? `&idTaskInstance=${idTaskInstance}` : ''
+      }`;
 
       const cookieStr = this.serializeCookies(stored.cookies);
       const autosRes = await fetch(autosUrl, {
         method: 'GET',
         headers: {
-          'Cookie': cookieStr,
+          Cookie: cookieStr,
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
         redirect: 'follow',
@@ -495,7 +558,7 @@ export class PJEDownloadWorker {
       const currentDate = `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
 
       const postBody = new URLSearchParams({
-        'AJAXREQUEST': '_viewRoot',
+        AJAXREQUEST: '_viewRoot',
         'navbar:cbTipoDocumento': '0',
         'navbar:idDe': '',
         'navbar:idAte': '',
@@ -505,34 +568,29 @@ export class PJEDownloadWorker {
         'navbar:dtFimInputCurrentDate': currentDate,
         'navbar:cbCronologia': 'DESC',
         '': 'on',
-        'navbar': 'navbar',
-        'autoScroll': '',
+        navbar: 'navbar',
+        autoScroll: '',
         'javax.faces.ViewState': viewState,
         [downloadBtnId]: downloadBtnId,
         'AJAX:EVENTS_COUNT': '1',
       });
 
-      const downloadRes = await fetch(
-        `${PJE_BASE}/pje/Processo/ConsultaProcesso/Detalhe/listAutosDigitais.seam`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'Cookie': cookieStr,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'X-Requested-With': 'XMLHttpRequest',
-            'Faces-Request': 'partial/ajax',
-          },
-          body: postBody.toString(),
-          redirect: 'follow',
-        }
-      );
+      const downloadRes = await fetch(`${PJE_BASE}/pje/Processo/ConsultaProcesso/Detalhe/listAutosDigitais.seam`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          Cookie: cookieStr,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Faces-Request': 'partial/ajax',
+        },
+        body: postBody.toString(),
+        redirect: 'follow',
+      });
 
       const responseHtml = await downloadRes.text();
 
-      const s3UrlMatch = responseHtml.match(
-        /window\.open\('(https:\/\/[^']*s3[^']*\.pdf[^']*?)'/
-      );
+      const s3UrlMatch = responseHtml.match(/window\.open\('(https:\/\/[^']*s3[^']*\.pdf[^']*?)'/);
       if (s3UrlMatch && s3UrlMatch[1]) {
         const file = await this.downloadFromS3(s3UrlMatch[1], numeroProcesso);
         return { type: 'direct', file };
@@ -553,12 +611,13 @@ export class PJEDownloadWorker {
       }
 
       if (responseHtml.length > 5000) {
-        console.log(`[PJE-WORKER] ${numeroProcesso}: resposta grande (${responseHtml.length} chars), tratando como queued`);
+        console.log(
+          `[PJE-WORKER] ${numeroProcesso}: resposta grande (${responseHtml.length} chars), tratando como queued`,
+        );
         return { type: 'queued' };
       }
 
       return { type: 'error', error: `Resposta inesperada ao solicitar download de ${numeroProcesso}` };
-
     } catch (err) {
       return {
         type: 'error',
@@ -587,7 +646,7 @@ export class PJEDownloadWorker {
 
     const allButtons = new Map<string, number>();
     const btnRegex = /(navbar:j_id(\d+))/g;
-    let btnMatch;
+    let btnMatch: RegExpExecArray | null;
     while ((btnMatch = btnRegex.exec(html)) !== null) {
       if (!allButtons.has(btnMatch[1])) {
         allButtons.set(btnMatch[1], btnMatch.index);
@@ -596,12 +655,11 @@ export class PJEDownloadWorker {
 
     if (allButtons.size === 0) return null;
 
-    const candidates = [...allButtons.keys()]
-      .filter(id => {
-        const pos = allButtons.get(id)!;
-        const context = html.substring(Math.max(0, pos - 200), Math.min(html.length, pos + 500));
-        return /download|baixar|gerar/i.test(context);
-      });
+    const candidates = [...allButtons.keys()].filter((id) => {
+      const pos = allButtons.get(id)!;
+      const context = html.substring(Math.max(0, pos - 200), Math.min(html.length, pos + 500));
+      return /download|baixar|gerar/i.test(context);
+    });
 
     if (candidates.length > 0) {
       const best = candidates[candidates.length - 1];
@@ -621,23 +679,18 @@ export class PJEDownloadWorker {
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
     pendingList: Array<{ proc: { idProcesso: number; numeroProcesso: string }; requestedAt: number }>,
     jobId: string,
-  ): Promise<Array<{
-    processNumber: string;
-    file?: PJEDownloadedFile;
-    error?: string;
-  }>> {
-    const results: Array<{
-      processNumber: string;
-      file?: PJEDownloadedFile;
-      error?: string;
-    }> = [];
+  ): Promise<Array<{ processNumber: string; file?: PJEDownloadedFile; error?: string }>> {
+    const results: Array<{ processNumber: string; file?: PJEDownloadedFile; error?: string }> = [];
 
     if (pendingList.length === 0) return results;
 
-    const remaining = new Map<string, {
-      proc: { idProcesso: number; numeroProcesso: string };
-      requestedAt: number;
-    }>();
+    const remaining = new Map<
+      string,
+      {
+        proc: { idProcesso: number; numeroProcesso: string };
+        requestedAt: number;
+      }
+    >();
 
     for (const item of pendingList) {
       const digits = item.proc.numeroProcesso.replace(/\D/g, '');
@@ -661,22 +714,20 @@ export class PJEDownloadWorker {
 
         for (const dl of downloads) {
           const status = (dl.situacaoDownload || '').toUpperCase();
-          if (!DOWNLOAD_AVAILABLE_STATUSES.includes(status)) {
-            continue;
-          }
+          if (!DOWNLOAD_AVAILABLE_STATUSES.includes(status)) continue;
 
           const nomeArquivo = dl.nomeArquivo || '';
           const dlDigits = nomeArquivo.replace(/\D/g, '');
 
           let matchedDigits: string | null = null;
 
-          for (const item of (dl.itens || [])) {
+          for (const item of dl.itens || []) {
             const itemDigits = (item.numeroProcesso || '').replace(/\D/g, '');
             if (remaining.has(itemDigits)) {
               matchedDigits = itemDigits;
               break;
             }
-            if (item.idProcesso && [...remaining.values()].some(r => r.proc.idProcesso === item.idProcesso)) {
+            if (item.idProcesso && [...remaining.values()].some((r) => r.proc.idProcesso === item.idProcesso)) {
               const found = [...remaining.entries()].find(([, r]) => r.proc.idProcesso === item.idProcesso);
               if (found) {
                 matchedDigits = found[0];
@@ -704,7 +755,9 @@ export class PJEDownloadWorker {
                 const file = await this.downloadFromS3(s3Url, item.proc.numeroProcesso);
                 results.push({ processNumber: item.proc.numeroProcesso, file });
                 remaining.delete(matchedDigits);
-                console.log(`[PJE-WORKER] ✓ Coletado da área de downloads: ${item.proc.numeroProcesso} (poll #${pollCount})`);
+                console.log(
+                  `[PJE-WORKER] ✓ Coletado da área de downloads: ${item.proc.numeroProcesso} (poll #${pollCount})`,
+                );
               }
             } catch (err) {
               console.warn(`[PJE-WORKER] Erro ao baixar ${item.proc.numeroProcesso} da área:`, err);
@@ -716,12 +769,12 @@ export class PJEDownloadWorker {
       }
 
       if (remaining.size > 0) {
-        const delay = Math.min(DOWNLOAD_POLL_INTERVAL + (pollCount * 2500), 30000);
+        const delay = Math.min(DOWNLOAD_POLL_INTERVAL + pollCount * 2500, 30000);
         await this.sleep(delay);
       }
     }
 
-    for (const [digits, item] of remaining) {
+    for (const [, item] of remaining) {
       results.push({
         processNumber: item.proc.numeroProcesso,
         error: `Timeout (${Math.round(DOWNLOAD_TIMEOUT / 1000)}s) aguardando download ficar disponível`,
@@ -735,12 +788,14 @@ export class PJEDownloadWorker {
 
   private async fetchAvailableDownloads(
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
-  ): Promise<Array<{
-    nomeArquivo: string;
-    hashDownload: string;
-    situacaoDownload: string;
-    itens: Array<{ idProcesso: number; numeroProcesso: string }>;
-  }>> {
+  ): Promise<
+    Array<{
+      nomeArquivo: string;
+      hashDownload: string;
+      situacaoDownload: string;
+      itens: Array<{ idProcesso: number; numeroProcesso: string }>;
+    }>
+  > {
     try {
       const cookieStr = this.serializeCookies(stored.cookies);
 
@@ -751,7 +806,7 @@ export class PJEDownloadWorker {
         method: 'GET',
         headers: {
           ...this.buildHeaders(stored),
-          'Cookie': cookieStr,
+          Cookie: cookieStr,
         },
       });
 
@@ -760,7 +815,7 @@ export class PJEDownloadWorker {
         return [];
       }
 
-      const data = await res.json() as any;
+      const data = (await res.json()) as any;
       return data?.downloadsDisponiveis || [];
     } catch (err) {
       console.warn(`[PJE-WORKER] Erro ao buscar downloads disponíveis:`, err);
@@ -777,13 +832,15 @@ export class PJEDownloadWorker {
     try {
       const cookieStr = this.serializeCookies(stored.cookies);
 
-      const url = `${PJE_REST_BASE}/pjedocs-api/v2/repositorio/gerar-url-download?hashDownload=${encodeURIComponent(hashDownload)}`;
+      const url = `${PJE_REST_BASE}/pjedocs-api/v2/repositorio/gerar-url-download?hashDownload=${encodeURIComponent(
+        hashDownload,
+      )}`;
 
       const res = await fetch(url, {
         method: 'GET',
         headers: {
           ...this.buildHeaders(stored),
-          'Cookie': cookieStr,
+          Cookie: cookieStr,
         },
       });
 
@@ -856,7 +913,9 @@ export class PJEDownloadWorker {
       const entities = result?.entities || (Array.isArray(result) ? result : []);
       const totalFromApi = result?.count ?? entities.length;
 
-      console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): primeira página ${entities.length} processos, total reportado: ${totalFromApi}`);
+      console.log(
+        `[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): primeira página ${entities.length} processos, total reportado: ${totalFromApi}`,
+      );
 
       const seenIds = new Set<number>();
       const processos: Array<{ idProcesso: number; numeroProcesso: string; idTaskInstance?: number }> = [];
@@ -886,7 +945,9 @@ export class PJEDownloadWorker {
           }
 
           pageNum++;
-          console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): buscando página ${pageNum} (offset=${offset}, coletados=${processos.length}/${totalExpected})`);
+          console.log(
+            `[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): buscando página ${pageNum} (offset=${offset}, coletados=${processos.length}/${totalExpected})`,
+          );
 
           const nextBody = { ...body, page: offset };
           const nextResult = await this.apiPost<any>(stored, endpoint, nextBody);
@@ -910,7 +971,9 @@ export class PJEDownloadWorker {
             }
           }
 
-          console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): página ${pageNum} retornou ${nextEntities.length} (${novosNestaPagina} novos), total coletado: ${processos.length}`);
+          console.log(
+            `[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): página ${pageNum} retornou ${nextEntities.length} (${novosNestaPagina} novos), total coletado: ${processos.length}`,
+          );
 
           if (novosNestaPagina === 0) {
             console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): nenhum processo novo na página ${pageNum}, encerrando`);
@@ -955,7 +1018,7 @@ export class PJEDownloadWorker {
       while (offset < total) {
         const result = await this.apiGet<any[]>(
           stored,
-          `painelUsuario/etiquetas/${tagId}/processos?limit=${PAGE_SIZE}&offset=${offset}`
+          `painelUsuario/etiquetas/${tagId}/processos?limit=${PAGE_SIZE}&offset=${offset}`,
         );
 
         const entities = Array.isArray(result) ? result : [];
@@ -1007,7 +1070,9 @@ export class PJEDownloadWorker {
   // HELPERS
 
   private serializeCookies(cookies: Record<string, string>): string {
-    return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+    return Object.entries(cookies)
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ');
   }
 
   private async updateStatus(
@@ -1023,16 +1088,26 @@ export class PJEDownloadWorker {
     errors: PJEDownloadErrorType[] = [],
   ): Promise<void> {
     this.service.setProgress(jobId, {
-      jobId, status, progress, totalProcesses, successCount,
-      failureCount, currentProcess, files, errors, message,
+      jobId,
+      status,
+      progress,
+      totalProcesses,
+      successCount,
+      failureCount,
+      currentProcess,
+      files,
+      errors,
+      message,
       timestamp: Date.now(),
-    });
+    } as PJEDownloadProgress);
   }
 
   private async failJob(jobId: string, message: string): Promise<void> {
     console.error(`[PJE-WORKER] Job ${jobId.slice(0, 8)} falhou: ${message}`);
     await this.repository.updateJob({
-      id: jobId, status: 'failed', completedAt: new Date(),
+      id: jobId,
+      status: 'failed',
+      completedAt: new Date(),
       errors: [{ message, code: 'WORKER_ERROR', timestamp: new Date().toISOString() }],
     });
     await this.updateStatus(jobId, 'failed', 0, message);
@@ -1043,8 +1118,8 @@ export class PJEDownloadWorker {
     return {
       'Content-Type': 'application/json',
       'X-pje-legacy-app': PJE_LEGACY_APP,
-      'Origin': PJE_FRONTEND_ORIGIN,
-      'Referer': `${PJE_FRONTEND_ORIGIN}/`,
+      Origin: PJE_FRONTEND_ORIGIN,
+      Referer: `${PJE_FRONTEND_ORIGIN}/`,
       'X-pje-cookies': cookieStr,
       'X-pje-usuario-localizacao': stored.idUsuarioLocalizacao,
     };
@@ -1057,7 +1132,7 @@ export class PJEDownloadWorker {
     const cookieStr = this.serializeCookies(stored.cookies);
     const res = await fetch(`${PJE_REST_BASE}/${endpoint}`, {
       method: 'GET',
-      headers: { ...this.buildHeaders(stored), 'Cookie': cookieStr },
+      headers: { ...this.buildHeaders(stored), Cookie: cookieStr },
     });
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('json')) return (await res.json()) as T;
@@ -1072,7 +1147,7 @@ export class PJEDownloadWorker {
     const cookieStr = this.serializeCookies(stored.cookies);
     const res = await fetch(`${PJE_REST_BASE}/${endpoint}`, {
       method: 'POST',
-      headers: { ...this.buildHeaders(stored), 'Cookie': cookieStr },
+      headers: { ...this.buildHeaders(stored), Cookie: cookieStr },
       body: JSON.stringify(body),
     });
     const ct = res.headers.get('content-type') || '';

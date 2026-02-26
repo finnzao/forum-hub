@@ -2,15 +2,27 @@
 // apps/api/src/modules/pje-download/services/pje-auth-proxy.service.ts
 // Proxy de autenticação PJE — login real no SSO do TJBA
 //
-// Correções v11:
-//  - BUG PRINCIPAL CORRIGIDO: o POST ao SSO enviava apenas
-//    (username, password, credentialId) mas o form Keycloak do
-//    PJE-TJBA tem campos customizados (pjeoffice-code, phrase).
-//    Agora extraímos TODOS os campos do form (hidden + visible)
-//    e fazemos merge com username/password.
-//  - Sessão persistida por CPF: reutiliza sessão ativa sem re-login
-//  - Log detalhado dos cookies enviados em cada redirect hop
-//  - Detecção de ;jsessionid= em Location (JBoss Seam URL rewriting)
+// Correções v12 (aplicadas sobre v11):
+//
+// BUG 1 — "ViewState não encontrado" (400 no selectProfile)
+//   Causa: regex /javax\.faces\.ViewState[^>]+value="([^"]+)"/
+//   falha quando o atributo `id` aparece ENTRE `name` e `value`:
+//     name="javax.faces.ViewState" id="javax.faces.ViewState" value="xxx"
+//   O [^>]+ para no primeiro `>` antes de atingir value=.
+//   Correção: extractViewState() com 6 estratégias em cascata.
+//
+// BUG 1b — Campo fantasma j_id72 no POST de seleção de perfil
+//   O v11 enviava 'papeisUsuarioForm:j_id72' que NÃO existe no DOM.
+//   O PJE retorna 200 mas ignora a troca de perfil silenciosamente.
+//   Correção: remover j_id72 do corpo do POST.
+//
+// BUG 3 — Perfil favorito nunca detectado
+//   Causa: `row.includes('j_id66')` nunca é true porque j_id66
+//   está no <thead>, não nas <tr> do <tbody>.
+//   Correção: detectar favorito pela imagem em cada row:
+//     favorite-16x16.png (sem -disabled) → favorito ✓
+//     favorite-16x16-disabled.png → não favorito
+//   Fallback: comparar nome com perfil ativo no <thead>.
 // ============================================================
 
 const PJE_BASE = 'https://pje.tjba.jus.br';
@@ -246,9 +258,6 @@ export class PJEAuthProxy {
         return { needs2FA: false, error: 'Formulário SSO não encontrado.' };
       }
 
-      // Merge: campos extraídos do form + credenciais do usuário
-      // Isso garante que pjeoffice-code, phrase, e qualquer outro campo
-      // customizado do Keycloak PJE-TJBA sejam enviados
       const postFields = {
         ...formData.fields,
         username: cpf,
@@ -385,7 +394,7 @@ export class PJEAuthProxy {
   }
 
   // ══════════════════════════════════════════════════════════
-  // SELEÇÃO DE PERFIL
+  // SELEÇÃO DE PERFIL — CORRIGIDO (BUG 1 + BUG 1b)
   // ══════════════════════════════════════════════════════════
 
   async selectProfile(sessionId: string, profileIndex: number): Promise<PJEProfileResult> {
@@ -397,39 +406,73 @@ export class PJEAuthProxy {
       this.idUsuarioLocalizacao = stored.idUsuarioLocalizacao;
       this.cpf = stored.cpf || '';
 
+      // 1. GET da página de perfis para obter ViewState FRESCO
       const profilePage = await this.followRedirects('GET', `${PJE_BASE}/pje/ng2/dev.seam`);
-      const viewState = this.extractViewState(profilePage.body);
-      if (!viewState) return { tasks: [], favoriteTasks: [], tags: [], error: 'ViewState não encontrado.' };
 
+      // 2. Extrair ViewState com 6 estratégias em cascata (BUG 1 fix)
+      const viewState = this.extractViewState(profilePage.body);
+      if (!viewState) {
+        const preview = profilePage.body.slice(0, 500).replace(/\s+/g, ' ');
+        console.error(`[PJE-AUTH] ViewState não encontrado na página de perfis`);
+        console.error(`[PJE-AUTH]   URL final: ${profilePage.finalUrl}`);
+        console.error(`[PJE-AUTH]   HTML preview: ${preview}`);
+        console.error(`[PJE-AUTH]   Cookies: ${this.cookieJar.summary()}`);
+        return { tasks: [], favoriteTasks: [], tags: [], error: 'ViewState não encontrado. A sessão pode ter expirado.' };
+      }
+
+      console.log(`[PJE-AUTH] ViewState encontrado (${viewState.length} chars): ${viewState.slice(0, 20)}...`);
+
+      // 3. POST para trocar perfil
+      //    BUG 1b fix: removido 'papeisUsuarioForm:j_id72' que não existe no DOM.
+      //    O v11 o enviava erroneamente, fazendo o PJE ignorar a troca de perfil.
       await this.followRedirects('POST', `${PJE_BASE}/pje/ng2/dev.seam`, new URLSearchParams({
         'papeisUsuarioForm': 'papeisUsuarioForm',
         'papeisUsuarioForm:j_id60': '',
-        'papeisUsuarioForm:j_id72': 'papeisUsuarioForm:j_id72',
         'javax.faces.ViewState': viewState,
         [`papeisUsuarioForm:dtPerfil:${profileIndex}:j_id70`]: `papeisUsuarioForm:dtPerfil:${profileIndex}:j_id70`,
       }));
 
+      // 4. Atualizar idUsuarioLocalizacao com o novo perfil ativo
       const user = await this.apiGet<any>('usuario/currentUser');
       if (user?.idUsuarioLocalizacaoMagistradoServidor) {
         this.idUsuarioLocalizacao = String(user.idUsuarioLocalizacaoMagistradoServidor);
+        console.log(`[PJE-AUTH] idUsuarioLocalizacao atualizado: ${this.idUsuarioLocalizacao}`);
       }
 
+      // 5. Persistir sessão atualizada
       stored.cookies = this.cookieJar.exportAll();
       stored.idUsuarioLocalizacao = this.idUsuarioLocalizacao;
       this.persistSession(user);
 
+      // 6. Buscar tarefas + etiquetas em paralelo
       const [tasks, favoriteTasks, tagsResult] = await Promise.all([
-        this.apiPost<any[]>('painelUsuario/tarefas', { numeroProcesso: '', competencia: '', etiquetas: [] }).catch(() => []),
-        this.apiPost<any[]>('painelUsuario/tarefasFavoritas', { numeroProcesso: '', competencia: '', etiquetas: [] }).catch(() => []),
-        this.apiPost<{ entities: any[] }>('painelUsuario/etiquetas', { page: 0, maxResults: 500, tagsString: '' }).catch(() => ({ entities: [] })),
+        this.apiPost<any[]>('painelUsuario/tarefas', { numeroProcesso: '', competencia: '', etiquetas: [] }).catch((e) => {
+          console.error('[PJE-AUTH] Erro ao buscar tarefas:', e);
+          return [];
+        }),
+        this.apiPost<any[]>('painelUsuario/tarefasFavoritas', { numeroProcesso: '', competencia: '', etiquetas: [] }).catch((e) => {
+          console.error('[PJE-AUTH] Erro ao buscar tarefas favoritas:', e);
+          return [];
+        }),
+        this.apiPost<{ entities: any[] }>('painelUsuario/etiquetas', { page: 0, maxResults: 500, tagsString: '' }).catch((e) => {
+          console.error('[PJE-AUTH] Erro ao buscar etiquetas:', e);
+          return { entities: [] };
+        }),
       ]);
 
+      const taskList = Array.isArray(tasks) ? tasks : [];
+      const favList = Array.isArray(favoriteTasks) ? favoriteTasks : [];
+      const tagList = tagsResult?.entities || [];
+
+      console.log(`[PJE-AUTH] Perfil OK: ${taskList.length} tarefas, ${favList.length} favoritas, ${tagList.length} etiquetas`);
+
       return {
-        tasks: Array.isArray(tasks) ? tasks : [],
-        favoriteTasks: Array.isArray(favoriteTasks) ? favoriteTasks : [],
-        tags: tagsResult?.entities || [],
+        tasks: taskList,
+        favoriteTasks: favList,
+        tags: tagList,
       };
     } catch (err) {
+      console.error('[PJE-AUTH] Erro em selectProfile:', err);
       return { tasks: [], favoriteTasks: [], tags: [], error: err instanceof Error ? err.message : 'Erro ao selecionar perfil' };
     }
   }
@@ -488,8 +531,17 @@ export class PJEAuthProxy {
   }
 
   // ══════════════════════════════════════════════════════════
-  // EXTRAIR PERFIS
+  // EXTRAIR PERFIS — CORRIGIDO (BUG 3)
   // ══════════════════════════════════════════════════════════
+  //
+  // ANTES (v11): `row.includes('j_id66')` nunca é true porque j_id66
+  // está no <thead>, não nas <tr> do <tbody> — favorito nunca detectado.
+  //
+  // DEPOIS (v12): verificar imagem da estrela em cada row do tbody:
+  //   favorite-16x16.png (sem -disabled) → favorito ✓
+  //   favorite-16x16-disabled.png → não favorito
+  //
+  // Fallback: comparar nome do perfil com o <thead> ativo.
 
   private async extractProfiles(): Promise<PJELoginResult['profiles']> {
     try {
@@ -497,6 +549,7 @@ export class PJEAuthProxy {
       const html = page.body;
       const profiles: Array<{ indice: number; nome: string; orgao: string; favorito: boolean }> = [];
 
+      // Coletar todos os índices presentes na página
       const indexSet = new Set<number>();
       const indexRegex = /papeisUsuarioForm:dtPerfil:(\d+)/g;
       let m;
@@ -504,45 +557,128 @@ export class PJEAuthProxy {
       const allIndices = [...indexSet].sort((a, b) => a - b);
       console.log(`[PJE-AUTH] Perfis indices: [${allIndices.join(', ')}]`);
 
+      // Extrair nome do perfil ativo no <thead> (para fallback de favorito)
+      const theadActiveName = this.extractTheadActiveName(html);
+      if (theadActiveName) console.log(`[PJE-AUTH] Perfil ativo no thead: "${theadActiveName}"`);
+
+      // Isolar o <tbody> para trabalhar apenas nas rows de seleção
+      const tbodyMatch = html.match(/<tbody[^>]*id="papeisUsuarioForm:dtPerfil:tb"[^>]*>([\s\S]*?)<\/tbody>/i);
+      const searchScope = tbodyMatch ? tbodyMatch[1] : html;
+
       for (const idx of allIndices) {
-        const linkPos = html.indexOf(`papeisUsuarioForm:dtPerfil:${idx}:j_id70`);
-        if (linkPos < 0) continue;
-
-        const before = html.substring(Math.max(0, linkPos - 3000), linkPos);
-        const trIdx = before.lastIndexOf('<tr');
-        if (trIdx < 0) continue;
-
-        const trStart = Math.max(0, linkPos - 3000) + trIdx;
-        const after = html.substring(trStart);
-        const trClose = after.match(/<\/tr>/i);
-        if (!trClose || trClose.index === undefined) continue;
-
-        const row = after.substring(0, trClose.index + 5);
-        const isFav = row.includes('j_id66') || /class="[^"]*(?:ui-icon-star|star-filled|favorit)/i.test(row);
-
-        const tds: string[] = [];
-        const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-        let td;
-        while ((td = tdRe.exec(row)) !== null) {
-          const t = this.decodeHtmlEntities(this.stripHtml(td[1]).trim());
-          if (t.length > 3 && !/^selecionar$/i.test(t)) tds.push(t);
-        }
-
-        let nome = tds.length > 0 ? tds.sort((a, b) => b.length - a.length)[0] : `Perfil ${idx}`;
-        let orgao = '';
-        const parts = nome.split(' / ');
-        if (parts.length >= 2) orgao = parts[0].trim();
-
-        profiles.push({ indice: idx, nome, orgao, favorito: isFav });
+        const profile = this.extractProfileRow(searchScope, html, idx, theadActiveName);
+        if (profile) profiles.push(profile);
       }
 
+      // Ordenar: favorito primeiro, depois por índice
+      profiles.sort((a, b) => {
+        if (a.favorito !== b.favorito) return a.favorito ? -1 : 1;
+        return a.indice - b.indice;
+      });
+
       console.log(`[PJE-AUTH] Perfis: ${profiles.length}`);
-      for (const p of profiles) console.log(`  [${p.indice}] ${p.favorito ? '⭐ ' : ''}${p.nome}`);
+      for (const p of profiles) console.log(`  [${p.indice}] ${p.favorito ? '⭐ ' : '   '}${p.nome}`);
       return profiles;
     } catch (err) {
       console.error('[PJE-AUTH] Erro perfis:', err);
       return [];
     }
+  }
+
+  /**
+   * Extrai o nome do perfil atualmente ativo do <thead>.
+   */
+  private extractTheadActiveName(html: string): string {
+    const theadMatch = html.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i);
+    if (!theadMatch) return '';
+    const linkMatch = theadMatch[1].match(/<a[^>]*>([\s\S]*?)<\/a>/i);
+    if (!linkMatch) return '';
+    return this.cleanText(linkMatch[1]);
+  }
+
+  /**
+   * Extrai dados de uma row de perfil do tbody.
+   *
+   * BUG 3 fix: detecta favorito pela imagem da estrela na row.
+   *   favorite-16x16.png (sem -disabled) → favorito
+   *   favorite-16x16-disabled.png → não favorito
+   */
+  private extractProfileRow(
+    scope: string,
+    fullHtml: string,
+    idx: number,
+    activeNome: string,
+  ): { indice: number; nome: string; orgao: string; favorito: boolean } | null {
+    const cellId = `papeisUsuarioForm:dtPerfil:${idx}:perfilInicial`;
+    let pos = scope.indexOf(cellId);
+    const searchHtml = pos >= 0 ? scope : fullHtml;
+    if (pos < 0) {
+      pos = fullHtml.indexOf(cellId);
+      if (pos < 0) {
+        // Fallback: localizar pelo link j_id70
+        pos = searchHtml.indexOf(`papeisUsuarioForm:dtPerfil:${idx}:j_id70`);
+        if (pos < 0) return null;
+      }
+    }
+
+    // Extrair o <tr> completo
+    const before = searchHtml.slice(0, pos);
+    const trStart = before.lastIndexOf('<tr');
+    if (trStart < 0) return null;
+    const after = searchHtml.slice(trStart);
+    const trClose = after.match(/<\/tr>/i);
+    if (!trClose?.index) return null;
+    const row = after.slice(0, trClose.index + 5);
+
+    // BUG 3 fix: detectar favorito pela imagem
+    const imgMatch = row.match(/src="[^"]*?(favorite-16x16)(-disabled)?\.png"/i);
+    const favByImage = imgMatch ? !imgMatch[2] : false;
+
+    // Fallback: comparar com nome do perfil ativo no thead
+    const nome = this.extractProfileName(row, idx);
+    const favByThehead = activeNome.length > 0 &&
+      nome.toLowerCase().trim() === activeNome.toLowerCase().trim();
+
+    const favorito = favByImage || favByThehead;
+    const parts = nome.split(' / ');
+    const orgao = parts.length >= 2 ? parts[0].trim() : '';
+
+    return { indice: idx, nome, orgao, favorito };
+  }
+
+  /**
+   * Extrai o nome do perfil pelo link j_id70 da row.
+   */
+  private extractProfileName(row: string, idx: number): string {
+    // 1. Link específico j_id70
+    const specificPattern = new RegExp(
+      `papeisUsuarioForm:dtPerfil:${idx}:j_id70[\\s\\S]{0,300}?<a[^>]*>([\\s\\S]*?)<\\/a>`, 'i'
+    );
+    const specific = row.match(specificPattern);
+    if (specific?.[1]) {
+      const t = this.cleanText(specific[1]);
+      if (t.length > 3) return t;
+    }
+
+    // 2. Textos de links <a>
+    const links: string[] = [];
+    for (const lm of row.matchAll(/<a[^>]*>([\s\S]*?)<\/a>/gi)) {
+      const t = this.cleanText(lm[1]);
+      if (t.length > 3 && !/^selecionar$/i.test(t)) links.push(t);
+    }
+    if (links.length > 0) return links.sort((a, b) => b.length - a.length)[0];
+
+    // 3. Textos de células <td>
+    const tds: string[] = [];
+    const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    let td;
+    while ((td = tdRe.exec(row)) !== null) {
+      const t = this.decodeHtmlEntities(this.stripHtml(td[1]).trim());
+      if (t.length > 3 && !/^selecionar$/i.test(t)) tds.push(t);
+    }
+    if (tds.length > 0) return tds.sort((a, b) => b.length - a.length)[0];
+
+    return `Perfil ${idx}`;
   }
 
   async debugGetProfilesHtml(sessionId: string): Promise<string> {
@@ -551,6 +687,85 @@ export class PJEAuthProxy {
     this.cookieJar.importAll(stored.cookies);
     this.idUsuarioLocalizacao = stored.idUsuarioLocalizacao;
     return (await this.followRedirects('GET', `${PJE_BASE}/pje/ng2/dev.seam`)).body;
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // EXTRAÇÃO DE VIEWSTATE — 6 ESTRATÉGIAS (BUG 1 fix)
+  // ══════════════════════════════════════════════════════════
+  //
+  // O HTML JSF do PJE pode ter o input em vários formatos:
+  //   (a) name="javax.faces.ViewState" value="xxx"
+  //   (b) name="..." id="javax.faces.ViewState" value="xxx"  ← CASO DO BUG
+  //   (c) id="..." name="..." value="..."
+  //
+  // O regex antigo /javax\.faces\.ViewState[^>]+value="([^"]+)"/
+  // falha no caso (b) porque [^>]+ para no primeiro `>` antes de value=.
+
+  private extractViewState(html: string): string | null {
+    const strategies: Array<() => string | null> = [
+      // 1. Dentro do form papeisUsuarioForm (mais específico)
+      () => {
+        const formMatch = html.match(/<form[^>]+(?:id|name)="papeisUsuarioForm"[^>]*>([\s\S]*?)<\/form>/i);
+        if (!formMatch) return null;
+        return this.extractViewStateFromFragment(formMatch[1]);
+      },
+      // 2. Qualquer form com method=post
+      () => {
+        for (const fm of html.matchAll(/<form[^>]+method="post"[^>]*>([\s\S]*?)<\/form>/gi)) {
+          const vs = this.extractViewStateFromFragment(fm[1]);
+          if (vs) return vs;
+        }
+        return null;
+      },
+      // 3. Input com name= antes de value= (formato padrão)
+      () => {
+        const m = html.match(/<input[^>]+name="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i);
+        return m?.[1] ?? null;
+      },
+      // 4. Input com value= antes de name= (ordem invertida)
+      () => {
+        const m = html.match(/<input[^>]+value="([^"]+)"[^>]+name="javax\.faces\.ViewState"/i);
+        return m?.[1] ?? null;
+      },
+      // 5. Input com id= intercalado antes de value= (caso exato do BUG 1)
+      () => {
+        const m = html.match(/<input[^>]+id="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i);
+        return m?.[1] ?? null;
+      },
+      // 6. Permissiva — qualquer ocorrência de ViewState seguida de value
+      () => {
+        const m = html.match(/javax\.faces\.ViewState[\s\S]{0,300}?value="([^"]{10,})"/i);
+        return m?.[1] ?? null;
+      },
+    ];
+
+    for (let i = 0; i < strategies.length; i++) {
+      try {
+        const result = strategies[i]();
+        if (result?.length) {
+          console.log(`[PJE-AUTH] ViewState via estratégia ${i + 1} (${result.length} chars)`);
+          return result;
+        }
+      } catch { /* tenta próxima */ }
+    }
+    return null;
+  }
+
+  /**
+   * Extrai ViewState de um fragmento HTML, cobrindo as 4 ordens possíveis de atributos.
+   */
+  private extractViewStateFromFragment(fragment: string): string | null {
+    const patterns = [
+      /<input[^>]+name="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i,
+      /<input[^>]+value="([^"]+)"[^>]+name="javax\.faces\.ViewState"/i,
+      /<input[^>]+id="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i,
+      /<input[^>]+value="([^"]+)"[^>]+id="javax\.faces\.ViewState"/i,
+    ];
+    for (const p of patterns) {
+      const m = fragment.match(p);
+      if (m?.[1]) return m[1];
+    }
+    return null;
   }
 
   // ══════════════════════════════════════════════════════════
@@ -657,21 +872,6 @@ export class PJEAuthProxy {
   // HTML / FORM PARSING
   // ══════════════════════════════════════════════════════════
 
-  /**
-   * Extrai TODOS os campos de um form HTML.
-   *
-   * O Keycloak do PJE-TJBA tem campos customizados no login form:
-   *   - pjeoffice-code (hidden, valor vazio)
-   *   - phrase (hidden, valor vazio)
-   * Estes campos NÃO existem no Keycloak padrão.
-   *
-   * Nosso código antigo enviava apenas (username, password, credentialId),
-   * o que fazia o SSO aceitar as credenciais mas possivelmente processar
-   * o form de modo diferente, causando falha no redirect chain.
-   *
-   * Agora extraímos TODOS os inputs do form e fazemos merge com
-   * username/password, replicando exatamente o que o browser envia.
-   */
   private extractFormFields(html: string, baseUrl: string): {
     actionUrl: string | null;
     fields: Record<string, string>;
@@ -680,7 +880,7 @@ export class PJEAuthProxy {
     let formHtml = '';
     let actionUrl: string | null = null;
 
-    // 1. form#kc-form-login (preferido)
+    // 1. form#kc-form-login (preferido — Keycloak)
     const kcFormMatch = html.match(/<form[^>]+id="kc-form-login"[^>]*>([\s\S]*?)<\/form>/i);
     if (kcFormMatch) {
       formHtml = kcFormMatch[0];
@@ -705,7 +905,7 @@ export class PJEAuthProxy {
       }
     }
 
-    // 3. Fallback absoluto: action em qualquer lugar
+    // 3. Fallback absoluto
     if (!actionUrl) {
       const actionMatch = html.match(/action="([^"]+)"/i);
       if (actionMatch) {
@@ -720,24 +920,30 @@ export class PJEAuthProxy {
     let inputMatch;
     while ((inputMatch = inputRegex.exec(formHtml)) !== null) {
       const tag = inputMatch[0];
-
       const nameMatch = tag.match(/name="([^"]*)"/i);
       if (!nameMatch) continue;
       const name = nameMatch[1];
-
-      // Ignorar botões
       const typeMatch = tag.match(/type="([^"]*)"/i);
       const type = typeMatch ? typeMatch[1].toLowerCase() : 'text';
       if (type === 'submit' || type === 'button' || type === 'image') continue;
-
       const valueMatch = tag.match(/value="([^"]*)"/i);
       const value = valueMatch ? valueMatch[1].replace(/&amp;/g, '&') : '';
-
       fields[name] = value;
     }
 
     console.log(`[PJE-AUTH] Form fields extracted: [${Object.keys(fields).join(', ')}]`);
     return { actionUrl, fields };
+  }
+
+  private cleanText(html: string): string {
+    return html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
+      .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+      .replace(/\s+/g, ' ').trim();
   }
 
   private detect2FA(html: string, url: string): boolean {
@@ -768,11 +974,6 @@ export class PJEAuthProxy {
       }
     }
     return null;
-  }
-
-  private extractViewState(html: string): string | null {
-    const match = html.match(/javax\.faces\.ViewState[^>]+value="([^"]+)"/);
-    return match?.[1] || null;
   }
 
   private isLoggedInUrl(url: string): boolean {
