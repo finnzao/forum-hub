@@ -1,14 +1,4 @@
-// ============================================================
-// apps/web/src/app/componentes/pje-download/api.ts
-// API Client — chamadas HTTP para o backend PJE Download
-//
-// Correções v8:
-//  - criarJob passa isFavorite explicitamente como boolean
-// ============================================================
-
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-
-// ── Erro customizado ──────────────────────────────────────
 
 export class ApiError extends Error {
   constructor(
@@ -21,8 +11,6 @@ export class ApiError extends Error {
   }
 }
 
-// ── Helper de request ─────────────────────────────────────
-
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -31,21 +19,12 @@ async function request<T>(
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    // Em produção, usar JWT. Em dev, header mock:
-    'x-user': JSON.stringify({
-      id: 1,
-      name: 'Dr. João Magistrado',
-      role: 'magistrado',
-    }),
+    'x-user': JSON.stringify({ id: 1, name: 'Dr. João Magistrado', role: 'magistrado' }),
     ...(options.headers as Record<string, string> || {}),
   };
 
   try {
-    const res = await fetch(url, {
-      ...options,
-      headers,
-    });
-
+    const res = await fetch(url, { ...options, headers });
     const body = await res.json().catch(() => null);
 
     if (!res.ok) {
@@ -53,7 +32,6 @@ async function request<T>(
       throw new ApiError(res.status, errorMsg, body);
     }
 
-    // A API retorna { success: true, data: ... }
     return (body?.data ?? body) as T;
   } catch (err) {
     if (err instanceof ApiError) throw err;
@@ -63,6 +41,16 @@ async function request<T>(
     throw err;
   }
 }
+
+// ── Tipos compartilhados ──────────────────────────────────
+
+type PJEDownloadMode = 'by_task' | 'by_tag' | 'by_number';
+
+type PJEJobStatus =
+  | 'pending' | 'authenticating' | 'awaiting_2fa'
+  | 'selecting_profile' | 'processing' | 'downloading'
+  | 'checking_integrity' | 'retrying'
+  | 'completed' | 'failed' | 'cancelled' | 'partial';
 
 // ── Auth ──────────────────────────────────────────────────
 
@@ -127,34 +115,30 @@ export async function selecionarPerfil(sessionId: string, profileIndex: number) 
 
 // ── Jobs ──────────────────────────────────────────────────
 
-interface CriarJobParams {
-  mode: 'by_task' | 'by_tag' | 'by_number';
+export interface CriarJobParams {
+  mode: PJEDownloadMode;
   credentials: { cpf: string; password: string };
   taskName?: string;
-  /**
-   * CORREÇÃO v8: isFavorite é enviado explicitamente.
-   * false = "Todas as Tarefas", true = "Minhas Tarefas (Favoritas)"
-   */
   isFavorite?: boolean;
   tagId?: number;
   tagName?: string;
   processNumbers?: string[];
   documentType?: number;
   pjeProfileIndex?: number;
+  pjeSessionId?: string;
 }
 
 export async function criarJob(params: CriarJobParams) {
-  // Garante que isFavorite seja boolean explícito (não undefined)
   const body = {
     ...params,
-    isFavorite: params.isFavorite === true, // false por padrão
+    isFavorite: params.isFavorite === true,
   };
 
   return request<{
     id: string;
     userId: number;
-    mode: string;
-    status: string;
+    mode: PJEDownloadMode;
+    status: PJEJobStatus;
     progress: number;
     totalProcesses: number;
     successCount: number;
@@ -170,7 +154,21 @@ export async function criarJob(params: CriarJobParams) {
 
 export async function listarJobs(limit = 20, offset = 0) {
   return request<{
-    jobs: any[];
+    jobs: Array<{
+      id: string;
+      userId: number;
+      mode: PJEDownloadMode;
+      status: PJEJobStatus;
+      progress: number;
+      totalProcesses: number;
+      successCount: number;
+      failureCount: number;
+      files: any[];
+      errors: any[];
+      createdAt: string;
+      startedAt?: string;
+      completedAt?: string;
+    }>;
     total: number;
   }>(`/api/pje/downloads?limit=${limit}&offset=${offset}`);
 }
@@ -178,7 +176,7 @@ export async function listarJobs(limit = 20, offset = 0) {
 export async function obterProgresso(jobId: string) {
   return request<{
     jobId: string;
-    status: string;
+    status: PJEJobStatus;
     progress: number;
     totalProcesses: number;
     successCount: number;

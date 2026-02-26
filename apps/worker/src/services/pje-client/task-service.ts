@@ -1,13 +1,3 @@
-// ============================================================
-// apps/worker/src/services/pje-client/task-service.ts
-// Task Service — tarefas e processos do painel PJE
-//
-// Correções v8:
-//  - Paginação usa offset correto (0, 500, 1000...)
-//  - getAllTaskProcesses retorna processos sem duplicatas
-//  - Log de progresso durante paginação
-// ============================================================
-
 import { PJEHttpClient } from './http-client';
 import { config } from '../../config';
 

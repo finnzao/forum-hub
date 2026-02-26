@@ -1,13 +1,3 @@
-// ============================================================
-// apps/api/src/modules/pje-download/services/pje-download.service.ts
-// Service — lógica de negócio do PJE Download
-// Sem Redis, sem BullMQ. Tudo em memória.
-//
-// Correções v8:
-//  - isFavorite é armazenado explicitamente como boolean nos params do job
-//  - Validação de isFavorite no DTO
-// ============================================================
-
 import { randomUUID } from 'node:crypto';
 import {
   PJE_MAX_CONCURRENT_JOBS,
@@ -70,8 +60,6 @@ export class PJEDownloadService {
 
     const jobId = randomUUID();
 
-    // CORREÇÃO v8: isFavorite é armazenado como boolean explícito
-    // false = "Todas as Tarefas", true = "Minhas Tarefas (Favoritas)"
     const isFavorite = dto.isFavorite === true;
 
     const job = await this.repository.createJob({
@@ -82,11 +70,12 @@ export class PJEDownloadService {
         credentials: { cpf: dto.credentials.cpf, password: dto.credentials.password },
         processNumbers: dto.processNumbers,
         taskName: dto.taskName,
-        isFavorite, // boolean explícito
+        isFavorite,
         tagId: dto.tagId,
         tagName: dto.tagName,
         documentType: dto.documentType,
         pjeProfileIndex: dto.pjeProfileIndex,
+        pjeSessionId: (dto as any).pjeSessionId,
       },
     });
 
@@ -219,7 +208,6 @@ export class PJEDownloadService {
         if (!dto.taskName?.trim()) {
           throw new PJEDownloadError('MISSING_PARAMS', 'Informe o nome da tarefa.', 400);
         }
-        // isFavorite é opcional e default false
         break;
 
       case 'by_tag':

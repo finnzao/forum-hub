@@ -1,13 +1,3 @@
-// ============================================================
-// app/magistrado/pje-download/page.tsx
-// Página de Download PJE — fluxo em etapas (wizard)
-//
-// Correções v5:
-//  - Polling usa useRef para evitar loop infinito de re-renders
-//  - Polling só roda se há jobs ativos (não fica disparando forever)
-//  - Erro de login mostra mensagem específica do SSO
-// ============================================================
-
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -33,12 +23,10 @@ import {
 
 import { Cabecalho } from '../../componentes/layout/Cabecalho';
 
-// ── Indicador de etapas ──────────────────────────────────────
-
 const ETAPAS_WIZARD: { id: EtapaWizard; rotulo: string; icone: React.ReactNode }[] = [
-  { id: 'login',     rotulo: 'Login',     icone: <Lock size={16} /> },
-  { id: 'perfil',    rotulo: 'Perfil',    icone: <User size={16} /> },
-  { id: 'download',  rotulo: 'Download',  icone: <ClipboardList size={16} /> },
+  { id: 'login', rotulo: 'Login', icone: <Lock size={16} /> },
+  { id: 'perfil', rotulo: 'Perfil', icone: <User size={16} /> },
+  { id: 'download', rotulo: 'Download', icone: <ClipboardList size={16} /> },
   { id: 'historico', rotulo: 'Histórico', icone: <History size={16} /> },
 ];
 
@@ -67,8 +55,6 @@ function IndicadorEtapas({ etapaAtual }: { etapaAtual: EtapaWizard }) {
   );
 }
 
-// ── Helpers de erro ──────────────────────────────────────────
-
 function extrairMensagemErro(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 0) return 'Servidor indisponível. Verifique se a API está em execução.';
@@ -87,8 +73,6 @@ function extrairDadosErro(err: unknown): Record<string, unknown> {
   return { tipo: 'Unknown', valor: String(err) };
 }
 
-// ── Hook de logs ─────────────────────────────────────────────
-
 let logIdCounter = 0;
 
 function useUiLogs() {
@@ -106,8 +90,6 @@ function useUiLogs() {
   return { logs, addLog, limpar };
 }
 
-// ── Componente principal ─────────────────────────────────────
-
 export default function PaginaDownloadPJE() {
   const [etapa, setEtapa] = useState<EtapaWizard>('login');
   const [sessao, setSessao] = useState<SessaoPJE>({ autenticado: false });
@@ -122,11 +104,8 @@ export default function PaginaDownloadPJE() {
 
   const { logs, addLog, limpar: limparLogs } = useUiLogs();
 
-  // Ref para jobs no polling — evita recriar callbacks e causar loops
   const jobsRef = useRef(jobs);
   jobsRef.current = jobs;
-
-  // ── ETAPA 1: Login (real) ──────────────────────────────────
 
   const handleLogin = useCallback(async (cpf: string, senha: string) => {
     setCarregando(true);
@@ -178,8 +157,6 @@ export default function PaginaDownloadPJE() {
     }
   }, [addLog]);
 
-  // ── ETAPA 2: 2FA (real) ────────────────────────────────────
-
   const handleEnviar2FA = useCallback(async (codigo: string) => {
     setCarregando(true);
     setErro(null);
@@ -213,8 +190,6 @@ export default function PaginaDownloadPJE() {
       setCarregando(false);
     }
   }, [addLog, sessao.sessionId]);
-
-  // ── ETAPA 3: Seleção de perfil (real) ──────────────────────
 
   const handleSelecionarPerfil = useCallback(async (perfil: PerfilPJE) => {
     setCarregando(true);
@@ -260,8 +235,6 @@ export default function PaginaDownloadPJE() {
     }
   }, [addLog, sessao.sessionId]);
 
-  // ── ETAPA 4: Criar job ─────────────────────────────────────
-
   const handleCriarJob = useCallback(async (params: ParametrosDownload) => {
     if (!credenciais) { setErro('Sessão expirada. Faça login novamente.'); return; }
     setCarregando(true);
@@ -269,7 +242,11 @@ export default function PaginaDownloadPJE() {
     addLog('info', 'JOB', `Criando job: modo=${params.mode}`, params);
 
     try {
-      const novoJob = await criarJob({ ...params, credentials: credenciais });
+      const novoJob = await criarJob({
+        ...params,
+        credentials: credenciais,
+        pjeSessionId: sessao.sessionId,
+      });
       addLog('success', 'JOB', `Job criado: ${novoJob.id.slice(0, 8)}`, { id: novoJob.id, modo: novoJob.mode, status: novoJob.status });
       setJobs((prev) => [novoJob, ...prev]);
       setJobExpandido(novoJob.id);
@@ -279,13 +256,7 @@ export default function PaginaDownloadPJE() {
     } finally {
       setCarregando(false);
     }
-  }, [credenciais, addLog]);
-
-  // ── Polling de jobs (estável — sem loop) ────────────────────
-  //
-  // useRef para jobs evita recriar callbacks a cada mudança de
-  // estado, o que causava o loop infinito de requests.
-  // Polling só faz requests se existem jobs ativos.
+  }, [credenciais, sessao.sessionId, addLog]);
 
   const carregarJobs = useCallback(async () => {
     try {
@@ -310,8 +281,6 @@ export default function PaginaDownloadPJE() {
     }
   }, []);
 
-  // Polling: carga inicial ao entrar no download, depois a cada 10s
-  // só se existem jobs ativos
   useEffect(() => {
     if (etapa !== 'download') return;
 
@@ -327,8 +296,6 @@ export default function PaginaDownloadPJE() {
 
     return () => clearInterval(interval);
   }, [etapa, carregarJobs, carregarProgresso]);
-
-  // ── Ações ──────────────────────────────────────────────────
 
   const handleLogout = useCallback(() => {
     addLog('info', 'AUTH', 'Logout');
@@ -354,8 +321,6 @@ export default function PaginaDownloadPJE() {
       addLog('error', 'JOB', extrairMensagemErro(err), extrairDadosErro(err));
     }
   }, [addLog, carregarJobs]);
-
-  // ── Render ─────────────────────────────────────────────────
 
   const etapaAtual: EtapaWizard = etapa === '2fa' ? 'login' : etapa;
   const mostrandoDownload = etapa === 'download' && sessao.perfilSelecionado;
@@ -459,7 +424,7 @@ export default function PaginaDownloadPJE() {
                     <CardJob key={job.id} job={job} progresso={mapaProgresso[job.id]}
                       expandido={jobExpandido === job.id}
                       onAlternarExpansao={() => setJobExpandido(jobExpandido === job.id ? null : job.id)}
-                      onCancelar={() => handleCancelar(job.id)} onAbrir2FA={() => {}} />
+                      onCancelar={() => handleCancelar(job.id)} onAbrir2FA={() => { }} />
                   ))}
                 </div>
               </div>

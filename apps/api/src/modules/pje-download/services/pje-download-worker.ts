@@ -1,21 +1,3 @@
-// ============================================================
-// apps/api/src/modules/pje-download/services/pje-download-worker.ts
-// Worker in-process — processa jobs de download do PJE
-//
-// Correções v8:
-//  - Paginação corrigida: page agora usa offset correto para
-//    listas com mais de 500 processos. O campo "page" da API PJE
-//    espera o offset (0, 500, 1000...), não número de página.
-//  - isFavorite agora é explicitamente booleano (false por padrão)
-//    para garantir que "Todas as Tarefas" seja o comportamento
-//    quando não especificado como true.
-//  - Log melhorado para diferenciar favoritas vs todas
-//  - Verificação extra de duplicatas na paginação
-//  - situacaoDownload: aceita 'S' (real) além de 'DISPONIVEL'
-//  - idUsuario para recuperarDownloadsDisponiveis usa
-//    idUsuario do currentUser (NÃO idUsuarioLocalizacaoMagistradoServidor)
-// ============================================================
-
 import { PJEAuthProxy, sessionStore } from './pje-auth-proxy.service';
 import { PJEDownloadService } from './pje-download.service';
 import type { IPJEDownloadRepository } from './pje-download.service';
@@ -93,9 +75,7 @@ export class PJEDownloadWorker {
     } catch { /* silencioso */ }
   }
 
-  // ══════════════════════════════════════════════════════════
   // PROCESSAMENTO PRINCIPAL DO JOB
-  // ══════════════════════════════════════════════════════════
 
   private async processJob(job: DownloadJobResponse): Promise<void> {
     const jobId = job.id;
@@ -118,38 +98,82 @@ export class PJEDownloadWorker {
       }
 
       // ── 1. Autenticar ──────────────────────────────────────
+      // CORREÇÃO v9: Tentar reutilizar sessão existente do sessionStore
+      // antes de fazer login completo. O usuário já se autenticou na UI,
+      // então a sessão provavelmente ainda é válida. Fazer um segundo login
+      // no SSO pode falhar porque o Keycloak já tem uma sessão ativa com
+      // cookies diferentes (KEYCLOAK_SESSION, KEYCLOAK_IDENTITY, etc.)
       await this.updateStatus(jobId, 'authenticating', 0, 'Autenticando no PJE...');
 
       const proxy = new PJEAuthProxy();
-      const loginResult = await proxy.login(cpf, password);
 
-      if (this.service.isCancelled(jobId)) return;
+      // Tentar reutilizar a sessão do fluxo de login da UI
+      const existingSessionId = params.pjeSessionId as string | undefined;
+      let sessionId: string | undefined;
+      let loginOk = false;
 
-      if (loginResult.needs2FA) {
-        await this.failJob(jobId, '2FA necessário. Faça login primeiro na interface para validar o dispositivo.');
+      if (existingSessionId) {
+        const existingSession = sessionStore.get(existingSessionId);
+        if (existingSession) {
+          console.log(`[PJE-WORKER] Job ${shortId} tentando reutilizar sessão: ${existingSessionId.slice(0, 16)}...`);
+          try {
+            // Validar sessão tentando selecionar o perfil
+            const profileIndex = params.pjeProfileIndex ?? 0;
+            const testResult = await proxy.selectProfile(existingSessionId, profileIndex);
+            if (!testResult.error) {
+              sessionId = existingSessionId;
+              loginOk = true;
+              console.log(`[PJE-WORKER] Job ${shortId} sessão reutilizada OK — ${testResult.tasks.length} tarefas`);
+            } else {
+              console.log(`[PJE-WORKER] Job ${shortId} sessão existente falhou: ${testResult.error}`);
+            }
+          } catch (err) {
+            console.log(`[PJE-WORKER] Job ${shortId} sessão existente inválida, fazendo login completo`);
+          }
+        } else {
+          console.log(`[PJE-WORKER] Job ${shortId} sessão ${existingSessionId.slice(0, 16)}... não encontrada no store`);
+        }
+      }
+
+      if (!loginOk) {
+        console.log(`[PJE-WORKER] Job ${shortId} fazendo login completo...`);
+        const loginResult = await proxy.login(cpf, password);
+
+        if (this.service.isCancelled(jobId)) return;
+
+        if (loginResult.needs2FA) {
+          await this.failJob(jobId, '2FA necessário. Faça login primeiro na interface para validar o dispositivo.');
+          return;
+        }
+
+        if (loginResult.error || !loginResult.user) {
+          await this.failJob(jobId, loginResult.error || 'Falha na autenticação.');
+          return;
+        }
+
+        sessionId = loginResult.sessionId!;
+        console.log(`[PJE-WORKER] Job ${shortId} autenticado como ${loginResult.user.nomeUsuario}`);
+      }
+
+      if (!sessionId) {
+        await this.failJob(jobId, 'Não foi possível obter sessão válida.');
         return;
       }
 
-      if (loginResult.error || !loginResult.user) {
-        await this.failJob(jobId, loginResult.error || 'Falha na autenticação.');
-        return;
+      // ── 2. Selecionar perfil (somente se fez login completo) ──
+      if (!loginOk) {
+        const profileIndex = params.pjeProfileIndex ?? 0;
+        await this.updateStatus(jobId, 'selecting_profile', 5, `Selecionando perfil #${profileIndex}...`);
+
+        const profileResult = await proxy.selectProfile(sessionId, profileIndex);
+        if (profileResult.error) {
+          await this.failJob(jobId, `Erro ao selecionar perfil: ${profileResult.error}`);
+          return;
+        }
+        if (this.service.isCancelled(jobId)) return;
+
+        console.log(`[PJE-WORKER] Job ${shortId} perfil selecionado — ${profileResult.tasks.length} tarefas`);
       }
-
-      const sessionId = loginResult.sessionId!;
-      console.log(`[PJE-WORKER] Job ${shortId} autenticado como ${loginResult.user.nomeUsuario}`);
-
-      // ── 2. Selecionar perfil ───────────────────────────────
-      const profileIndex = params.pjeProfileIndex ?? 0;
-      await this.updateStatus(jobId, 'selecting_profile', 5, `Selecionando perfil #${profileIndex}...`);
-
-      const profileResult = await proxy.selectProfile(sessionId, profileIndex);
-      if (profileResult.error) {
-        await this.failJob(jobId, `Erro ao selecionar perfil: ${profileResult.error}`);
-        return;
-      }
-      if (this.service.isCancelled(jobId)) return;
-
-      console.log(`[PJE-WORKER] Job ${shortId} perfil selecionado — ${profileResult.tasks.length} tarefas`);
 
       const stored = sessionStore.get(sessionId);
       if (!stored) {
@@ -179,9 +203,6 @@ export class PJEDownloadWorker {
 
         case 'by_task': {
           const taskName = params.taskName || '';
-          // CORREÇÃO v8: isFavorite deve ser estritamente booleano.
-          // false = "Todas as Tarefas" (lista completa sem filtro de favorito)
-          // true  = "Minhas Tarefas" (apenas processos marcados como favoritos)
           const isFavorite = params.isFavorite === true;
           const tipoLista = isFavorite ? 'Minhas Tarefas (Favoritas)' : 'Todas as Tarefas';
 
@@ -389,9 +410,9 @@ export class PJEDownloadWorker {
       // ── 7. Finalizar ──────────────────────────────────────
       const finalStatus: PJEJobStatus =
         this.service.isCancelled(jobId) ? 'cancelled' :
-        failureCount === 0 ? 'completed' :
-        successCount === 0 ? 'failed' :
-        'partial';
+          failureCount === 0 ? 'completed' :
+            successCount === 0 ? 'failed' :
+              'partial';
 
       await this.repository.updateJob({
         id: jobId, status: finalStatus, progress: 100,
@@ -415,9 +436,7 @@ export class PJEDownloadWorker {
     }
   }
 
-  // ══════════════════════════════════════════════════════════
   // SOLICITAR DOWNLOAD DE UM PROCESSO
-  // ══════════════════════════════════════════════════════════
 
   private async requestDownload(
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
@@ -447,7 +466,7 @@ export class PJEDownloadWorker {
 
       const autosUrl = `${PJE_BASE}/pje/Processo/ConsultaProcesso/Detalhe/listAutosDigitais.seam?idProcesso=${idProcesso}&ca=${ca}${idTaskInstance ? `&idTaskInstance=${idTaskInstance}` : ''}`;
 
-      const cookieStr = Object.entries(stored.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+      const cookieStr = this.serializeCookies(stored.cookies);
       const autosRes = await fetch(autosUrl, {
         method: 'GET',
         headers: {
@@ -548,9 +567,7 @@ export class PJEDownloadWorker {
     }
   }
 
-  // ══════════════════════════════════════════════════════════
   // EXTRAIR ID DO BOTÃO DE DOWNLOAD
-  // ══════════════════════════════════════════════════════════
 
   private extractDownloadButtonId(html: string): string | null {
     const downloadBtnPatterns = [
@@ -598,9 +615,7 @@ export class PJEDownloadWorker {
     return last;
   }
 
-  // ══════════════════════════════════════════════════════════
   // COLETAR DOWNLOADS PENDENTES DA ÁREA DE DOWNLOADS
-  // ══════════════════════════════════════════════════════════
 
   private async collectPendingDownloads(
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
@@ -716,9 +731,7 @@ export class PJEDownloadWorker {
     return results;
   }
 
-  // ══════════════════════════════════════════════════════════
   // BUSCAR DOWNLOADS DISPONÍVEIS NA ÁREA DE DOWNLOADS
-  // ══════════════════════════════════════════════════════════
 
   private async fetchAvailableDownloads(
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
@@ -729,7 +742,7 @@ export class PJEDownloadWorker {
     itens: Array<{ idProcesso: number; numeroProcesso: string }>;
   }>> {
     try {
-      const cookieStr = Object.entries(stored.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+      const cookieStr = this.serializeCookies(stored.cookies);
 
       const userId = stored.idUsuario || stored.idUsuarioLocalizacao;
       const url = `${PJE_REST_BASE}/pjedocs-api/v1/downloadService/recuperarDownloadsDisponiveis?idUsuario=${userId}&sistemaOrigem=PRIMEIRA_INSTANCIA`;
@@ -755,16 +768,14 @@ export class PJEDownloadWorker {
     }
   }
 
-  // ══════════════════════════════════════════════════════════
   // GERAR URL DE DOWNLOAD S3
-  // ══════════════════════════════════════════════════════════
 
   private async generateS3DownloadUrl(
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
     hashDownload: string,
   ): Promise<string | null> {
     try {
-      const cookieStr = Object.entries(stored.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+      const cookieStr = this.serializeCookies(stored.cookies);
 
       const url = `${PJE_REST_BASE}/pjedocs-api/v2/repositorio/gerar-url-download?hashDownload=${encodeURIComponent(hashDownload)}`;
 
@@ -785,17 +796,7 @@ export class PJEDownloadWorker {
     }
   }
 
-  // ══════════════════════════════════════════════════════════
   // LISTAR PROCESSOS POR TAREFA
-  //
-  // CORREÇÃO v8 — Paginação:
-  //  - A API PJE usa "page" como offset (0, 500, 1000...),
-  //    NÃO como número de página (0, 1, 2...).
-  //  - Adicionado controle de duplicatas por idProcesso.
-  //  - Adicionado log de progresso da paginação.
-  //  - Adicionado limite de segurança (max 10000 processos).
-  //  - isFavorite é passado diretamente para o endpoint.
-  // ══════════════════════════════════════════════════════════
 
   private async listProcessesByTask(
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
@@ -851,14 +852,12 @@ export class PJEDownloadWorker {
 
       console.log(`[PJE-WORKER] Listando processos da tarefa "${taskName}" (tipo=${tipoLista}, isFavorite=${isFavorite})`);
 
-      // Primeira página
       const result = await this.apiPost<any>(stored, endpoint, body);
       const entities = result?.entities || (Array.isArray(result) ? result : []);
       const totalFromApi = result?.count ?? entities.length;
 
       console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): primeira página ${entities.length} processos, total reportado: ${totalFromApi}`);
 
-      // Usar Set para evitar duplicatas por idProcesso
       const seenIds = new Set<number>();
       const processos: Array<{ idProcesso: number; numeroProcesso: string; idTaskInstance?: number }> = [];
 
@@ -873,10 +872,7 @@ export class PJEDownloadWorker {
         }
       }
 
-      // CORREÇÃO v8: Paginação robusta para mais de 500 processos
-      // A API PJE espera "page" como offset (0, 500, 1000...).
-      // Continuamos buscando enquanto houver mais resultados.
-      const MAX_TOTAL_PROCESSOS = 10000; // Limite de segurança
+      const MAX_TOTAL_PROCESSOS = 10000;
 
       if (totalFromApi > PAGE_SIZE && entities.length >= PAGE_SIZE) {
         let offset = PAGE_SIZE;
@@ -916,13 +912,11 @@ export class PJEDownloadWorker {
 
           console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): página ${pageNum} retornou ${nextEntities.length} (${novosNestaPagina} novos), total coletado: ${processos.length}`);
 
-          // Se não houve novos processos, possivelmente a API está retornando duplicatas
           if (novosNestaPagina === 0) {
             console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): nenhum processo novo na página ${pageNum}, encerrando`);
             break;
           }
 
-          // Se retornou menos que PAGE_SIZE, é a última página
           if (nextEntities.length < PAGE_SIZE) {
             console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): última página (${nextEntities.length} < ${PAGE_SIZE})`);
             break;
@@ -941,9 +935,7 @@ export class PJEDownloadWorker {
     }
   }
 
-  // ══════════════════════════════════════════════════════════
   // LISTAR PROCESSOS POR ETIQUETA
-  // ══════════════════════════════════════════════════════════
 
   private async listProcessesByTag(
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
@@ -988,9 +980,7 @@ export class PJEDownloadWorker {
     }
   }
 
-  // ══════════════════════════════════════════════════════════
   // DOWNLOAD DO ARQUIVO S3
-  // ══════════════════════════════════════════════════════════
 
   private async downloadFromS3(url: string, numeroProcesso: string): Promise<PJEDownloadedFile> {
     const fileName = `${numeroProcesso}-processo.pdf`;
@@ -1014,9 +1004,11 @@ export class PJEDownloadWorker {
     };
   }
 
-  // ══════════════════════════════════════════════════════════
   // HELPERS
-  // ══════════════════════════════════════════════════════════
+
+  private serializeCookies(cookies: Record<string, string>): string {
+    return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+  }
 
   private async updateStatus(
     jobId: string,
@@ -1047,7 +1039,7 @@ export class PJEDownloadWorker {
   }
 
   private buildHeaders(stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string }): Record<string, string> {
-    const cookieStr = Object.entries(stored.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+    const cookieStr = this.serializeCookies(stored.cookies);
     return {
       'Content-Type': 'application/json',
       'X-pje-legacy-app': PJE_LEGACY_APP,
@@ -1062,7 +1054,7 @@ export class PJEDownloadWorker {
     stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
     endpoint: string,
   ): Promise<T> {
-    const cookieStr = Object.entries(stored.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+    const cookieStr = this.serializeCookies(stored.cookies);
     const res = await fetch(`${PJE_REST_BASE}/${endpoint}`, {
       method: 'GET',
       headers: { ...this.buildHeaders(stored), 'Cookie': cookieStr },
@@ -1077,7 +1069,7 @@ export class PJEDownloadWorker {
     endpoint: string,
     body: any,
   ): Promise<T> {
-    const cookieStr = Object.entries(stored.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+    const cookieStr = this.serializeCookies(stored.cookies);
     const res = await fetch(`${PJE_REST_BASE}/${endpoint}`, {
       method: 'POST',
       headers: { ...this.buildHeaders(stored), 'Cookie': cookieStr },
