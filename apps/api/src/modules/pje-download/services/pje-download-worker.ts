@@ -75,6 +75,79 @@ export class PJEDownloadWorker {
     }
   }
 
+  // ══════════════════════════════════════════════════════════
+  // SERIALIZAÇÃO DE COOKIES — CORRIGIDO
+  //
+  // O CookieJar do PJEAuthProxy exporta cookies com chaves
+  // no formato "domain::name" (ex: "pje.tjba.jus.br::JSESSIONID").
+  //
+  // O worker PRECISA extrair apenas o "name" ao serializar,
+  // caso contrário o PJE recebe nomes de cookies inválidos e
+  // ignora a sessão, retornando 0 processos.
+  //
+  // Além disso, filtramos apenas cookies do domínio PJE principal,
+  // evitando enviar cookies do SSO que não são relevantes para
+  // a API REST.
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * Serializa cookies do formato exportado pelo CookieJar (domain::name=value)
+   * para o formato HTTP Cookie header (name=value).
+   *
+   * Filtra para incluir apenas cookies do domínio pje.tjba.jus.br
+   * (que são os relevantes para a API REST).
+   */
+  private serializeCookies(cookies: Record<string, string>): string {
+    const PJE_DOMAIN = 'pje.tjba.jus.br';
+    const result: string[] = [];
+    const seen = new Set<string>();
+
+    for (const [key, value] of Object.entries(cookies)) {
+      const sepIdx = key.indexOf('::');
+
+      if (sepIdx > 0) {
+        // Formato domain::name (do CookieJar.exportAll())
+        const domain = key.slice(0, sepIdx);
+        const name = key.slice(sepIdx + 2);
+
+        // Incluir cookies do domínio PJE principal
+        if (domain === PJE_DOMAIN && name && !seen.has(name)) {
+          seen.add(name);
+          result.push(`${name}=${value}`);
+        }
+      } else {
+        // Formato simples name=value (fallback)
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          result.push(`${key}=${value}`);
+        }
+      }
+    }
+
+    return result.join('; ');
+  }
+
+  /**
+   * Serializa TODOS os cookies (de todos os domínios) para uso no header
+   * X-pje-cookies, que o frontend PJE pode precisar.
+   */
+  private serializeAllCookies(cookies: Record<string, string>): string {
+    const result: string[] = [];
+    const seen = new Set<string>();
+
+    for (const [key, value] of Object.entries(cookies)) {
+      const sepIdx = key.indexOf('::');
+      const name = sepIdx > 0 ? key.slice(sepIdx + 2) : key;
+
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        result.push(`${name}=${value}`);
+      }
+    }
+
+    return result.join('; ');
+  }
+
   // PROCESSAMENTO PRINCIPAL DO JOB
 
   private async processJob(job: DownloadJobResponse): Promise<void> {
@@ -98,10 +171,6 @@ export class PJEDownloadWorker {
       }
 
       // ── 1. Autenticar ──────────────────────────────────────
-      // BUG 2 (validação dupla de sessão): removida.
-      // Agora:
-      // - Se existir pjeSessionId e estiver no sessionStore, assumimos que já está válida e pronta (UI já autenticou e selecionou perfil).
-      // - Se não existir sessão reaproveitável, fazemos login completo e selecionamos perfil UMA ÚNICA VEZ.
       await this.updateStatus(jobId, 'authenticating', 0, 'Autenticando no PJE...');
 
       const proxy = new PJEAuthProxy();
@@ -117,6 +186,15 @@ export class PJEDownloadWorker {
           reusedSession = true;
           console.log(
             `[PJE-WORKER] Job ${shortId} reutilizando sessão do store: ${existingSessionId.slice(0, 16)}...`,
+          );
+
+          // DEBUG: Log dos cookies para verificar formato
+          const cookieKeys = Object.keys(existingSession.cookies).slice(0, 5);
+          console.log(
+            `[PJE-WORKER] Job ${shortId} cookie keys sample: ${cookieKeys.join(', ')}`,
+          );
+          console.log(
+            `[PJE-WORKER] Job ${shortId} idUsuarioLocalizacao: ${existingSession.idUsuarioLocalizacao}`,
           );
         } else {
           console.log(
@@ -160,8 +238,6 @@ export class PJEDownloadWorker {
 
         console.log(`[PJE-WORKER] Job ${shortId} perfil selecionado — ${profileResult.tasks.length} tarefas`);
       } else {
-        // Se estamos reutilizando sessão, NÃO fazemos selectProfile de novo (evita validação dupla / estado inconsistente)
-        // e assumimos que a UI já selecionou o perfil correto para esta sessão.
         if (reusedSession) {
           const profileIndex = params.pjeProfileIndex ?? 0;
           console.log(
@@ -180,6 +256,12 @@ export class PJEDownloadWorker {
         await this.failJob(jobId, 'Sessão não encontrada no store (expirada/limpa).');
         return;
       }
+
+      // DEBUG: Verificar o Cookie header que será enviado
+      const cookiePreview = this.serializeCookies(stored.cookies);
+      console.log(
+        `[PJE-WORKER] Job ${shortId} Cookie header preview (${cookiePreview.length} chars): ${cookiePreview.slice(0, 120)}...`,
+      );
 
       // ── 3. Listar processos ────────────────────────────────
       await this.updateStatus(jobId, 'processing', 10, 'Listando processos...');
@@ -202,7 +284,7 @@ export class PJEDownloadWorker {
         }
 
         case 'by_task': {
-          const taskName = params.taskName || '';
+          const taskName = (params.taskName || '').trim();
           const isFavorite = params.isFavorite === true;
           const tipoLista = isFavorite ? 'Minhas Tarefas (Favoritas)' : 'Todas as Tarefas';
 
@@ -414,11 +496,9 @@ export class PJEDownloadWorker {
                 files.push(result.file);
                 successCount++;
 
-                // Remove erro anterior desse processo (se existir) sem quebrar quando não existir
                 const errIdx = errors.findIndex((e) => e.processNumber === proc.numeroProcesso);
                 if (errIdx >= 0) {
                   errors.splice(errIdx, 1);
-                  // Só decrementa failureCount se realmente existia erro registrado
                   failureCount = Math.max(0, failureCount - 1);
                 }
 
@@ -862,7 +942,8 @@ export class PJEDownloadWorker {
     jobId?: string,
   ): Promise<Array<{ idProcesso: number; numeroProcesso: string; idTaskInstance?: number }>> {
     try {
-      const encodedName = encodeURIComponent(taskName);
+      const trimmedName = taskName.trim();
+      const encodedName = encodeURIComponent(trimmedName);
       const endpoint = `painelUsuario/recuperarProcessosTarefaPendenteComCriterios/${encodedName}/${isFavorite}`;
       const tipoLista = isFavorite ? 'favoritas' : 'todas';
 
@@ -907,14 +988,28 @@ export class PJEDownloadWorker {
         tipoProcessoDocumento: null,
       };
 
-      console.log(`[PJE-WORKER] Listando processos da tarefa "${taskName}" (tipo=${tipoLista}, isFavorite=${isFavorite})`);
+      console.log(`[PJE-WORKER] Listando processos da tarefa "${trimmedName}" (tipo=${tipoLista}, isFavorite=${isFavorite})`);
 
       const result = await this.apiPost<any>(stored, endpoint, body);
+
+      // DEBUG: Log do resultado raw para diagnóstico
+      if (result === null || result === undefined) {
+        console.error(`[PJE-WORKER] Tarefa "${trimmedName}": API retornou null/undefined`);
+        return [];
+      }
+
+      const resultType = typeof result;
+      if (resultType === 'string') {
+        const preview = (result as string).slice(0, 200);
+        console.error(`[PJE-WORKER] Tarefa "${trimmedName}": API retornou string (possível HTML/redirect): ${preview}`);
+        return [];
+      }
+
       const entities = result?.entities || (Array.isArray(result) ? result : []);
       const totalFromApi = result?.count ?? entities.length;
 
       console.log(
-        `[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): primeira página ${entities.length} processos, total reportado: ${totalFromApi}`,
+        `[PJE-WORKER] Tarefa "${trimmedName}" (${tipoLista}): primeira página ${entities.length} processos, total reportado: ${totalFromApi}`,
       );
 
       const seenIds = new Set<number>();
@@ -946,7 +1041,7 @@ export class PJEDownloadWorker {
 
           pageNum++;
           console.log(
-            `[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): buscando página ${pageNum} (offset=${offset}, coletados=${processos.length}/${totalExpected})`,
+            `[PJE-WORKER] Tarefa "${trimmedName}" (${tipoLista}): buscando página ${pageNum} (offset=${offset}, coletados=${processos.length}/${totalExpected})`,
           );
 
           const nextBody = { ...body, page: offset };
@@ -954,7 +1049,7 @@ export class PJEDownloadWorker {
           const nextEntities = nextResult?.entities || (Array.isArray(nextResult) ? nextResult : []);
 
           if (nextEntities.length === 0) {
-            console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): página ${pageNum} vazia, encerrando paginação`);
+            console.log(`[PJE-WORKER] Tarefa "${trimmedName}" (${tipoLista}): página ${pageNum} vazia, encerrando paginação`);
             break;
           }
 
@@ -972,16 +1067,16 @@ export class PJEDownloadWorker {
           }
 
           console.log(
-            `[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): página ${pageNum} retornou ${nextEntities.length} (${novosNestaPagina} novos), total coletado: ${processos.length}`,
+            `[PJE-WORKER] Tarefa "${trimmedName}" (${tipoLista}): página ${pageNum} retornou ${nextEntities.length} (${novosNestaPagina} novos), total coletado: ${processos.length}`,
           );
 
           if (novosNestaPagina === 0) {
-            console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): nenhum processo novo na página ${pageNum}, encerrando`);
+            console.log(`[PJE-WORKER] Tarefa "${trimmedName}" (${tipoLista}): nenhum processo novo na página ${pageNum}, encerrando`);
             break;
           }
 
           if (nextEntities.length < PAGE_SIZE) {
-            console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): última página (${nextEntities.length} < ${PAGE_SIZE})`);
+            console.log(`[PJE-WORKER] Tarefa "${trimmedName}" (${tipoLista}): última página (${nextEntities.length} < ${PAGE_SIZE})`);
             break;
           }
 
@@ -990,7 +1085,7 @@ export class PJEDownloadWorker {
         }
       }
 
-      console.log(`[PJE-WORKER] Tarefa "${taskName}" (${tipoLista}): TOTAL FINAL = ${processos.length} processos coletados`);
+      console.log(`[PJE-WORKER] Tarefa "${trimmedName}" (${tipoLista}): TOTAL FINAL = ${processos.length} processos coletados`);
       return processos;
     } catch (err) {
       console.error(`[PJE-WORKER] Erro ao listar processos da tarefa "${taskName}":`, err);
@@ -1069,12 +1164,6 @@ export class PJEDownloadWorker {
 
   // HELPERS
 
-  private serializeCookies(cookies: Record<string, string>): string {
-    return Object.entries(cookies)
-      .map(([k, v]) => `${k}=${v}`)
-      .join('; ');
-  }
-
   private async updateStatus(
     jobId: string,
     status: PJEJobStatus,
@@ -1114,7 +1203,7 @@ export class PJEDownloadWorker {
   }
 
   private buildHeaders(stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string }): Record<string, string> {
-    const cookieStr = this.serializeCookies(stored.cookies);
+    const cookieStr = this.serializeAllCookies(stored.cookies);
     return {
       'Content-Type': 'application/json',
       'X-pje-legacy-app': PJE_LEGACY_APP,
