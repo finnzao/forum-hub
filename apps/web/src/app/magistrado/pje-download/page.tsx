@@ -55,6 +55,15 @@ function IndicadorEtapas({ etapaAtual }: { etapaAtual: EtapaWizard }) {
   );
 }
 
+function isSessionExpiredError(err: unknown): boolean {
+  if (err instanceof ApiError) {
+    if (err.status === 401) return true;
+    const data = err.data as any;
+    if (data?.error?.code === 'SESSION_EXPIRED') return true;
+  }
+  return false;
+}
+
 function extrairMensagemErro(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 0) return 'Servidor indisponível. Verifique se a API está em execução.';
@@ -106,6 +115,14 @@ export default function PaginaDownloadPJE() {
 
   const jobsRef = useRef(jobs);
   jobsRef.current = jobs;
+
+  const handleLogout = useCallback(() => {
+    addLog('info', 'AUTH', 'Logout');
+    setSessao({ autenticado: false });
+    setCredenciais(null);
+    setEtapa('login');
+    setErro(null);
+  }, [addLog]);
 
   const handleLogin = useCallback(async (cpf: string, senha: string) => {
     setCarregando(true);
@@ -201,7 +218,8 @@ export default function PaginaDownloadPJE() {
     try {
       const sid = sessao.sessionId;
       if (!sid) {
-        setErro('Sessão expirada. Faça login novamente.');
+        addLog('warn', 'PERFIL', 'Sessão expirada — redirecionando para login');
+        handleLogout();
         return;
       }
 
@@ -228,12 +246,18 @@ export default function PaginaDownloadPJE() {
         setErro('Falha ao selecionar perfil.');
       }
     } catch (err: any) {
+      if (isSessionExpiredError(err)) {
+        addLog('warn', 'PERFIL', 'Sessão PJE expirada — redirecionando para login');
+        handleLogout();
+        return;
+      }
+
       addLog('error', 'PERFIL', extrairMensagemErro(err), extrairDadosErro(err));
       setErro(extrairMensagemErro(err));
     } finally {
       setCarregando(false);
     }
-  }, [addLog, sessao.sessionId]);
+  }, [addLog, sessao.sessionId, handleLogout]);
 
   const handleCriarJob = useCallback(async (params: ParametrosDownload) => {
     if (!credenciais) { setErro('Sessão expirada. Faça login novamente.'); return; }
@@ -296,14 +320,6 @@ export default function PaginaDownloadPJE() {
 
     return () => clearInterval(interval);
   }, [etapa, carregarJobs, carregarProgresso]);
-
-  const handleLogout = useCallback(() => {
-    addLog('info', 'AUTH', 'Logout');
-    setSessao({ autenticado: false });
-    setCredenciais(null);
-    setEtapa('login');
-    setErro(null);
-  }, [addLog]);
 
   const handleVoltarPerfil = useCallback(() => {
     addLog('info', 'NAV', 'Voltando para seleção de perfil');

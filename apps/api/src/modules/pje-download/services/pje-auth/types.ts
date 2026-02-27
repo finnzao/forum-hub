@@ -45,6 +45,7 @@ export interface PJETag {
 export interface StoredSession {
   cookies: Record<string, string>;
   idUsuarioLocalizacao: string;
+  idUsuario?: number;
   ssoHtml?: string;
   ssoFinalUrl?: string;
   cpf?: string;
@@ -54,6 +55,7 @@ export interface StoredSession {
 export interface PersistedSession {
   cookies: Record<string, string>;
   idUsuarioLocalizacao: string;
+  idUsuario?: number;
   user?: PJEUserInfo;
   updatedAt: number;
 }

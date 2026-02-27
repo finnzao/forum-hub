@@ -10,6 +10,7 @@ export class PJEAuthProxy {
   private cookieJar = new CookieJar();
   private http = new PJEHttpClient(this.cookieJar);
   private idUsuarioLocalizacao = '';
+  private idUsuario: number | undefined;
   private cpf = '';
 
   async login(cpf: string, password: string): Promise<PJELoginResult> {
@@ -60,6 +61,7 @@ export class PJEAuthProxy {
         sessionStore.set(newSid, {
           cookies: this.cookieJar.exportAll(),
           idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+          idUsuario: this.idUsuario,
           ssoHtml: result.body,
           ssoFinalUrl: result.finalUrl,
           cpf: this.cpf,
@@ -76,18 +78,34 @@ export class PJEAuthProxy {
   async selectProfile(sessionId: string, profileIndex: number): Promise<PJEProfileResult> {
     try {
       const stored = sessionStore.get(sessionId);
-      if (!stored) return { tasks: [], favoriteTasks: [], tags: [], error: 'Sessão expirada.' };
+      if (!stored) return { tasks: [], favoriteTasks: [], tags: [], error: 'SESSION_EXPIRED' };
 
       this.restoreFromSession(stored);
 
       const profilePage = await this.http.followRedirects('GET', `${PJE_BASE}/pje/ng2/dev.seam`);
+
+      // Detecta se a sessão expirou (redirecionou para SSO)
+      if (this.isRedirectedToSSO(profilePage.finalUrl)) {
+        console.error(`[PJE-AUTH] Sessão PJE expirada — redirecionou para SSO`);
+        console.error(`[PJE-AUTH]   URL final: ${profilePage.finalUrl}`);
+        console.error(`[PJE-AUTH]   Cookies: ${this.cookieJar.summary()}`);
+
+        if (this.cpf) clearPersistedSession(this.cpf);
+        sessionStore.delete(sessionId);
+
+        return { tasks: [], favoriteTasks: [], tags: [], error: 'SESSION_EXPIRED' };
+      }
 
       const viewState = extractViewState(profilePage.body);
       if (!viewState) {
         console.error(`[PJE-AUTH] ViewState não encontrado na página de perfis`);
         console.error(`[PJE-AUTH]   URL final: ${profilePage.finalUrl}`);
         console.error(`[PJE-AUTH]   Cookies: ${this.cookieJar.summary()}`);
-        return { tasks: [], favoriteTasks: [], tags: [], error: 'ViewState não encontrado. A sessão pode ter expirado.' };
+
+        if (this.cpf) clearPersistedSession(this.cpf);
+        sessionStore.delete(sessionId);
+
+        return { tasks: [], favoriteTasks: [], tags: [], error: 'SESSION_EXPIRED' };
       }
 
       console.log(`[PJE-AUTH] ViewState encontrado (${viewState.length} chars): ${viewState.slice(0, 20)}...`);
@@ -97,11 +115,14 @@ export class PJEAuthProxy {
       const user = await this.fetchCurrentUser();
       if (user?.idUsuarioLocalizacaoMagistradoServidor) {
         this.idUsuarioLocalizacao = String(user.idUsuarioLocalizacaoMagistradoServidor);
+        this.idUsuario = user.idUsuario;
         console.log(`[PJE-AUTH] idUsuarioLocalizacao atualizado: ${this.idUsuarioLocalizacao}`);
+        console.log(`[PJE-AUTH] idUsuario atualizado: ${this.idUsuario}`);
       }
 
       stored.cookies = this.cookieJar.exportAll();
       stored.idUsuarioLocalizacao = this.idUsuarioLocalizacao;
+      stored.idUsuario = this.idUsuario;
       this.persistSession(user);
 
       return await this.fetchTasksAndTags();
@@ -109,6 +130,12 @@ export class PJEAuthProxy {
       console.error('[PJE-AUTH] Erro em selectProfile:', err);
       return { tasks: [], favoriteTasks: [], tags: [], error: err instanceof Error ? err.message : 'Erro ao selecionar perfil' };
     }
+  }
+
+  private isRedirectedToSSO(finalUrl: string): boolean {
+    return finalUrl.includes('sso.cloud.pje.jus.br') ||
+           finalUrl.includes('openid-connect/auth') ||
+           finalUrl.includes('/auth/realms/');
   }
 
   async debugGetProfilesHtml(sessionId: string): Promise<string> {
@@ -125,6 +152,7 @@ export class PJEAuthProxy {
     console.log(`[PJE-AUTH] Sessão persistida encontrada para CPF ***${cpf.slice(-4)}, validando...`);
     this.cookieJar.importAll(persisted.cookies);
     this.idUsuarioLocalizacao = persisted.idUsuarioLocalizacao;
+    this.idUsuario = persisted.idUsuario;
 
     const user = await this.fetchCurrentUser();
     if (!user?.idUsuario) {
@@ -136,17 +164,20 @@ export class PJEAuthProxy {
 
     console.log(`[PJE-AUTH] Sessão persistida VÁLIDA — reutilizando`);
     this.idUsuarioLocalizacao = String(user.idUsuarioLocalizacaoMagistradoServidor || '');
+    this.idUsuario = user.idUsuario;
 
     const sid = generateSessionId();
     sessionStore.set(sid, {
       cookies: this.cookieJar.exportAll(),
       idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+      idUsuario: this.idUsuario,
       cpf: this.cpf,
     });
 
     savePersistedSession(cpf, {
       cookies: this.cookieJar.exportAll(),
       idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+      idUsuario: this.idUsuario,
       user: this.mapUser(user),
     });
 
@@ -191,6 +222,7 @@ export class PJEAuthProxy {
       sessionStore.set(sid, {
         cookies: this.cookieJar.exportAll(),
         idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+        idUsuario: this.idUsuario,
         ssoHtml: result.body,
         ssoFinalUrl: result.finalUrl,
         cpf: this.cpf,
@@ -229,10 +261,12 @@ export class PJEAuthProxy {
     }
 
     this.idUsuarioLocalizacao = String(user.idUsuarioLocalizacaoMagistradoServidor || '');
+    this.idUsuario = user.idUsuario;
     const sid = generateSessionId();
     sessionStore.set(sid, {
       cookies: this.cookieJar.exportAll(),
       idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+      idUsuario: this.idUsuario,
       cpf: this.cpf,
     });
 
@@ -299,9 +333,10 @@ export class PJEAuthProxy {
     }
   }
 
-  private restoreFromSession(stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; cpf?: string }): void {
+  private restoreFromSession(stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number; cpf?: string }): void {
     this.cookieJar.importAll(stored.cookies);
     this.idUsuarioLocalizacao = stored.idUsuarioLocalizacao;
+    this.idUsuario = stored.idUsuario;
     this.cpf = stored.cpf || '';
   }
 
@@ -310,6 +345,7 @@ export class PJEAuthProxy {
     savePersistedSession(this.cpf, {
       cookies: this.cookieJar.exportAll(),
       idUsuarioLocalizacao: this.idUsuarioLocalizacao,
+      idUsuario: this.idUsuario ?? user?.idUsuario,
       user: user ? this.mapUser(user) : undefined,
     });
   }

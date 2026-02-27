@@ -16,7 +16,6 @@ const PJE_REST_BASE = `${PJE_BASE}/pje/seam/resource/rest/pje-legacy`;
 const PJE_FRONTEND_ORIGIN = 'https://frontend.cloud.pje.jus.br';
 const PJE_LEGACY_APP = 'pje-tjba-1g';
 
-// Configuração
 const POLL_INTERVAL = 3000;
 const DOWNLOAD_DELAY = 2000;
 const DOWNLOAD_POLL_INTERVAL = 10000;
@@ -26,7 +25,6 @@ const DOWNLOAD_BATCH_SIZE = 10;
 const DOWNLOAD_DIR = path.join(process.cwd(), 'downloads');
 const PAGE_SIZE = 500;
 
-// Status que indicam download disponível na API do PJE
 const DOWNLOAD_AVAILABLE_STATUSES = ['S', 'DISPONIVEL', 'AVAILABLE'];
 
 export class PJEDownloadWorker {
@@ -71,32 +69,9 @@ export class PJEDownloadWorker {
         });
       }
     } catch {
-      /* silencioso */
     }
   }
 
-  // ══════════════════════════════════════════════════════════
-  // SERIALIZAÇÃO DE COOKIES — CORRIGIDO
-  //
-  // O CookieJar do PJEAuthProxy exporta cookies com chaves
-  // no formato "domain::name" (ex: "pje.tjba.jus.br::JSESSIONID").
-  //
-  // O worker PRECISA extrair apenas o "name" ao serializar,
-  // caso contrário o PJE recebe nomes de cookies inválidos e
-  // ignora a sessão, retornando 0 processos.
-  //
-  // Além disso, filtramos apenas cookies do domínio PJE principal,
-  // evitando enviar cookies do SSO que não são relevantes para
-  // a API REST.
-  // ══════════════════════════════════════════════════════════
-
-  /**
-   * Serializa cookies do formato exportado pelo CookieJar (domain::name=value)
-   * para o formato HTTP Cookie header (name=value).
-   *
-   * Filtra para incluir apenas cookies do domínio pje.tjba.jus.br
-   * (que são os relevantes para a API REST).
-   */
   private serializeCookies(cookies: Record<string, string>): string {
     const PJE_DOMAIN = 'pje.tjba.jus.br';
     const result: string[] = [];
@@ -106,17 +81,14 @@ export class PJEDownloadWorker {
       const sepIdx = key.indexOf('::');
 
       if (sepIdx > 0) {
-        // Formato domain::name (do CookieJar.exportAll())
         const domain = key.slice(0, sepIdx);
         const name = key.slice(sepIdx + 2);
 
-        // Incluir cookies do domínio PJE principal
         if (domain === PJE_DOMAIN && name && !seen.has(name)) {
           seen.add(name);
           result.push(`${name}=${value}`);
         }
       } else {
-        // Formato simples name=value (fallback)
         if (key && !seen.has(key)) {
           seen.add(key);
           result.push(`${key}=${value}`);
@@ -127,10 +99,6 @@ export class PJEDownloadWorker {
     return result.join('; ');
   }
 
-  /**
-   * Serializa TODOS os cookies (de todos os domínios) para uso no header
-   * X-pje-cookies, que o frontend PJE pode precisar.
-   */
   private serializeAllCookies(cookies: Record<string, string>): string {
     const result: string[] = [];
     const seen = new Set<string>();
@@ -147,8 +115,6 @@ export class PJEDownloadWorker {
 
     return result.join('; ');
   }
-
-  // PROCESSAMENTO PRINCIPAL DO JOB
 
   private async processJob(job: DownloadJobResponse): Promise<void> {
     const jobId = job.id;
@@ -170,7 +136,6 @@ export class PJEDownloadWorker {
         return;
       }
 
-      // ── 1. Autenticar ──────────────────────────────────────
       await this.updateStatus(jobId, 'authenticating', 0, 'Autenticando no PJE...');
 
       const proxy = new PJEAuthProxy();
@@ -188,13 +153,15 @@ export class PJEDownloadWorker {
             `[PJE-WORKER] Job ${shortId} reutilizando sessão do store: ${existingSessionId.slice(0, 16)}...`,
           );
 
-          // DEBUG: Log dos cookies para verificar formato
           const cookieKeys = Object.keys(existingSession.cookies).slice(0, 5);
           console.log(
             `[PJE-WORKER] Job ${shortId} cookie keys sample: ${cookieKeys.join(', ')}`,
           );
           console.log(
             `[PJE-WORKER] Job ${shortId} idUsuarioLocalizacao: ${existingSession.idUsuarioLocalizacao}`,
+          );
+          console.log(
+            `[PJE-WORKER] Job ${shortId} idUsuario: ${existingSession.idUsuario ?? 'N/A'}`,
           );
         } else {
           console.log(
@@ -225,7 +192,6 @@ export class PJEDownloadWorker {
         sessionId = loginResult.sessionId!;
         console.log(`[PJE-WORKER] Job ${shortId} autenticado como ${loginResult.user.nomeUsuario}`);
 
-        // ── 2. Selecionar perfil (somente após login completo) ──
         const profileIndex = params.pjeProfileIndex ?? 0;
         await this.updateStatus(jobId, 'selecting_profile', 5, `Selecionando perfil #${profileIndex}...`);
 
@@ -257,13 +223,43 @@ export class PJEDownloadWorker {
         return;
       }
 
-      // DEBUG: Verificar o Cookie header que será enviado
+      if (!stored.idUsuario) {
+        console.log(`[PJE-WORKER] Job ${shortId} idUsuario ausente na sessão, buscando via currentUser...`);
+        try {
+          const cookieStr = this.serializeCookies(stored.cookies);
+          const allCookieStr = this.serializeAllCookies(stored.cookies);
+          const res = await fetch(`${PJE_REST_BASE}/usuario/currentUser`, {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-pje-legacy-app': PJE_LEGACY_APP,
+              'Origin': PJE_FRONTEND_ORIGIN,
+              'Referer': `${PJE_FRONTEND_ORIGIN}/`,
+              'X-pje-cookies': allCookieStr,
+              'X-pje-usuario-localizacao': stored.idUsuarioLocalizacao,
+              'Cookie': cookieStr,
+            },
+          });
+          if (res.ok) {
+            const ct = res.headers.get('content-type') || '';
+            if (ct.includes('json')) {
+              const user = await res.json() as any;
+              if (user?.idUsuario) {
+                stored.idUsuario = user.idUsuario;
+                console.log(`[PJE-WORKER] Job ${shortId} idUsuario obtido: ${user.idUsuario}`);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`[PJE-WORKER] Job ${shortId} falha ao buscar currentUser:`, err);
+        }
+      }
+
       const cookiePreview = this.serializeCookies(stored.cookies);
       console.log(
         `[PJE-WORKER] Job ${shortId} Cookie header preview (${cookiePreview.length} chars): ${cookiePreview.slice(0, 120)}...`,
       );
 
-      // ── 3. Listar processos ────────────────────────────────
       await this.updateStatus(jobId, 'processing', 10, 'Listando processos...');
 
       interface ProcessoInfo {
@@ -337,7 +333,6 @@ export class PJEDownloadWorker {
         startedAt: new Date(),
       });
 
-      // ── 4. Download em lotes ───────────────────────────────
       const files: PJEDownloadedFile[] = [];
       const errors: PJEDownloadErrorType[] = [];
       let successCount = 0;
@@ -443,7 +438,6 @@ export class PJEDownloadWorker {
         }
       }
 
-      // ── 5. Verificação de integridade ──────────────────────
       await this.updateStatus(
         jobId,
         'checking_integrity',
@@ -464,7 +458,6 @@ export class PJEDownloadWorker {
         return !downloadedDigits.has(digits);
       });
 
-      // ── 6. Retries automáticos ─────────────────────────────
       if (missingProcesses.length > 0 && !this.service.isCancelled(jobId)) {
         await this.updateStatus(
           jobId,
@@ -507,7 +500,6 @@ export class PJEDownloadWorker {
                 retryPending.push({ proc, requestedAt: Date.now() });
               }
             } catch {
-              /* continua */
             }
 
             await this.sleep(DOWNLOAD_DELAY);
@@ -535,7 +527,6 @@ export class PJEDownloadWorker {
         }
       }
 
-      // ── 7. Finalizar ──────────────────────────────────────
       const finalStatus: PJEJobStatus = this.service.isCancelled(jobId)
         ? 'cancelled'
         : failureCount === 0
@@ -580,10 +571,8 @@ export class PJEDownloadWorker {
     }
   }
 
-  // SOLICITAR DOWNLOAD DE UM PROCESSO
-
   private async requestDownload(
-    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
+    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number },
     proc: { idProcesso: number; numeroProcesso: string; idTaskInstance?: number },
   ): Promise<{
     type: 'direct' | 'queued' | 'error';
@@ -706,8 +695,6 @@ export class PJEDownloadWorker {
     }
   }
 
-  // EXTRAIR ID DO BOTÃO DE DOWNLOAD
-
   private extractDownloadButtonId(html: string): string | null {
     const downloadBtnPatterns = [
       /id="(navbar:j_id\d+)"[^>]*value="Download"/i,
@@ -753,10 +740,8 @@ export class PJEDownloadWorker {
     return last;
   }
 
-  // COLETAR DOWNLOADS PENDENTES DA ÁREA DE DOWNLOADS
-
   private async collectPendingDownloads(
-    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
+    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number },
     pendingList: Array<{ proc: { idProcesso: number; numeroProcesso: string }; requestedAt: number }>,
     jobId: string,
   ): Promise<Array<{ processNumber: string; file?: PJEDownloadedFile; error?: string }>> {
@@ -792,9 +777,15 @@ export class PJEDownloadWorker {
       try {
         const downloads = await this.fetchAvailableDownloads(stored);
 
+        console.log(
+          `[PJE-WORKER] Poll #${pollCount}: ${downloads.length} download(s) na área, ${remaining.size} pendente(s)`,
+        );
+
         for (const dl of downloads) {
           const status = (dl.situacaoDownload || '').toUpperCase();
-          if (!DOWNLOAD_AVAILABLE_STATUSES.includes(status)) continue;
+          if (!DOWNLOAD_AVAILABLE_STATUSES.includes(status)) {
+            continue;
+          }
 
           const nomeArquivo = dl.nomeArquivo || '';
           const dlDigits = nomeArquivo.replace(/\D/g, '');
@@ -864,10 +855,8 @@ export class PJEDownloadWorker {
     return results;
   }
 
-  // BUSCAR DOWNLOADS DISPONÍVEIS NA ÁREA DE DOWNLOADS
-
   private async fetchAvailableDownloads(
-    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
+    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number },
   ): Promise<
     Array<{
       nomeArquivo: string;
@@ -882,6 +871,8 @@ export class PJEDownloadWorker {
       const userId = stored.idUsuario || stored.idUsuarioLocalizacao;
       const url = `${PJE_REST_BASE}/pjedocs-api/v1/downloadService/recuperarDownloadsDisponiveis?idUsuario=${userId}&sistemaOrigem=PRIMEIRA_INSTANCIA`;
 
+      console.log(`[PJE-WORKER] fetchAvailableDownloads: idUsuario=${userId}, url=${url.slice(0, 120)}...`);
+
       const res = await fetch(url, {
         method: 'GET',
         headers: {
@@ -891,22 +882,51 @@ export class PJEDownloadWorker {
       });
 
       if (!res.ok) {
-        console.warn(`[PJE-WORKER] recuperarDownloadsDisponiveis retornou ${res.status}`);
+        const body = await res.text().catch(() => '');
+        console.warn(`[PJE-WORKER] recuperarDownloadsDisponiveis retornou ${res.status}: ${body.slice(0, 200)}`);
+
+        if (res.status === 404 || res.status === 400) {
+          const altUrl = `${PJE_BASE}/pje/seam/resource/rest/pjedocs-api/v1/downloadService/recuperarDownloadsDisponiveis?idUsuario=${userId}&sistemaOrigem=PRIMEIRA_INSTANCIA`;
+          console.log(`[PJE-WORKER] Tentando URL alternativa: ${altUrl.slice(0, 120)}...`);
+          const altRes = await fetch(altUrl, {
+            method: 'GET',
+            headers: {
+              ...this.buildHeaders(stored),
+              Cookie: cookieStr,
+            },
+          });
+          if (altRes.ok) {
+            const altData = (await altRes.json()) as any;
+            const downloads = altData?.downloadsDisponiveis || [];
+            console.log(`[PJE-WORKER] URL alternativa OK: ${downloads.length} downloads`);
+            return downloads;
+          }
+        }
+
         return [];
       }
 
       const data = (await res.json()) as any;
-      return data?.downloadsDisponiveis || [];
+      const downloads = data?.downloadsDisponiveis || [];
+      console.log(`[PJE-WORKER] recuperarDownloadsDisponiveis: ${downloads.length} downloads disponíveis`);
+
+      if (downloads.length > 0) {
+        for (const dl of downloads.slice(0, 3)) {
+          console.log(
+            `[PJE-WORKER]   - ${dl.nomeArquivo?.slice(0, 60)} | status=${dl.situacaoDownload} | itens=${dl.itens?.length || 0}`,
+          );
+        }
+      }
+
+      return downloads;
     } catch (err) {
       console.warn(`[PJE-WORKER] Erro ao buscar downloads disponíveis:`, err);
       return [];
     }
   }
 
-  // GERAR URL DE DOWNLOAD S3
-
   private async generateS3DownloadUrl(
-    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
+    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number },
     hashDownload: string,
   ): Promise<string | null> {
     try {
@@ -924,7 +944,24 @@ export class PJEDownloadWorker {
         },
       });
 
-      if (!res.ok) return null;
+      if (!res.ok) {
+        console.warn(`[PJE-WORKER] gerar-url-download retornou ${res.status}`);
+
+        const altUrl = `${PJE_BASE}/pje/seam/resource/rest/pjedocs-api/v2/repositorio/gerar-url-download?hashDownload=${encodeURIComponent(hashDownload)}`;
+        const altRes = await fetch(altUrl, {
+          method: 'GET',
+          headers: {
+            ...this.buildHeaders(stored),
+            Cookie: cookieStr,
+          },
+        });
+        if (altRes.ok) {
+          const altS3Url = await altRes.text();
+          return altS3Url ? altS3Url.replace(/^"|"$/g, '').trim() : null;
+        }
+
+        return null;
+      }
 
       const s3Url = await res.text();
       return s3Url ? s3Url.replace(/^"|"$/g, '').trim() : null;
@@ -933,10 +970,8 @@ export class PJEDownloadWorker {
     }
   }
 
-  // LISTAR PROCESSOS POR TAREFA
-
   private async listProcessesByTask(
-    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
+    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number },
     taskName: string,
     isFavorite: boolean,
     jobId?: string,
@@ -992,7 +1027,6 @@ export class PJEDownloadWorker {
 
       const result = await this.apiPost<any>(stored, endpoint, body);
 
-      // DEBUG: Log do resultado raw para diagnóstico
       if (result === null || result === undefined) {
         console.error(`[PJE-WORKER] Tarefa "${trimmedName}": API retornou null/undefined`);
         return [];
@@ -1093,10 +1127,8 @@ export class PJEDownloadWorker {
     }
   }
 
-  // LISTAR PROCESSOS POR ETIQUETA
-
   private async listProcessesByTag(
-    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
+    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number },
     tagId: number,
   ): Promise<Array<{ idProcesso: number; numeroProcesso: string }>> {
     try {
@@ -1138,8 +1170,6 @@ export class PJEDownloadWorker {
     }
   }
 
-  // DOWNLOAD DO ARQUIVO S3
-
   private async downloadFromS3(url: string, numeroProcesso: string): Promise<PJEDownloadedFile> {
     const fileName = `${numeroProcesso}-processo.pdf`;
     const filePath = path.join(DOWNLOAD_DIR, fileName);
@@ -1161,8 +1191,6 @@ export class PJEDownloadWorker {
       downloadedAt: new Date().toISOString(),
     };
   }
-
-  // HELPERS
 
   private async updateStatus(
     jobId: string,
@@ -1202,7 +1230,7 @@ export class PJEDownloadWorker {
     await this.updateStatus(jobId, 'failed', 0, message);
   }
 
-  private buildHeaders(stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string }): Record<string, string> {
+  private buildHeaders(stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number }): Record<string, string> {
     const cookieStr = this.serializeAllCookies(stored.cookies);
     return {
       'Content-Type': 'application/json',
@@ -1215,7 +1243,7 @@ export class PJEDownloadWorker {
   }
 
   private async apiGet<T>(
-    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
+    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number },
     endpoint: string,
   ): Promise<T> {
     const cookieStr = this.serializeCookies(stored.cookies);
@@ -1229,7 +1257,7 @@ export class PJEDownloadWorker {
   }
 
   private async apiPost<T>(
-    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: string },
+    stored: { cookies: Record<string, string>; idUsuarioLocalizacao: string; idUsuario?: number },
     endpoint: string,
     body: any,
   ): Promise<T> {

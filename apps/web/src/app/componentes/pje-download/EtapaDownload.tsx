@@ -1,16 +1,3 @@
-// ============================================================
-// apps/web/src/app/componentes/pje-download/EtapaDownload.tsx
-// Etapa de Download — formulário para criar jobs
-//
-// Correções v8:
-//  - Separação clara entre "Todas as Tarefas" e "Minhas Tarefas (Favoritas)"
-//  - "Todas as Tarefas" mostra a lista completa de tarefas do PJE
-//  - "Minhas Tarefas" mostra apenas as tarefas marcadas como favoritas
-//  - O campo isFavorite é passado corretamente para o backend
-//  - Ambas as listas mostram todos os nomes de tarefas disponíveis
-//  - UI com abas para alternar entre as duas listas
-// ============================================================
-
 'use client';
 
 import React, { useState, useMemo } from 'react';
@@ -446,9 +433,9 @@ export function EtapaDownload({
             </div>
           ) : (
             <div className="space-y-1 max-h-64 overflow-y-auto">
-              {etiquetasFiltradas.map((etiqueta) => (
+              {etiquetasFiltradas.map((etiqueta,idx) => (
                 <button
-                  key={etiqueta.id}
+                  key={`tag-${etiqueta.id}-${idx}`}
                   type="button"
                   onClick={() => setEtiquetaSelecionada(etiqueta.id)}
                   className={`w-full text-left p-3 border-2 transition-all flex items-center gap-2 ${
