@@ -18,8 +18,8 @@ export class CookieJar {
 
     if (!this.jar.has(domain)) this.jar.set(domain, {});
     const domainCookies = this.jar.get(domain)!;
-
     const newCookies: string[] = [];
+
     for (const raw of setCookieHeaders) {
       const [pair] = raw.split(';');
       const eqIdx = pair.indexOf('=');
@@ -33,20 +33,34 @@ export class CookieJar {
       }
     }
 
-    if (newCookies.length > 0) {
+    if (newCookies.length > 0)
       console.log(`[PJE-AUTH]     cookies set by ${domain}: ${newCookies.join(', ')}`);
-    }
   }
 
-  serializeForUrl(url: string): string {
+  // Cookies apenas do domínio solicitado (para header Cookie)
+  serializeForDomain(url: string): string {
     const requestDomain = this.getDomain(url);
     const allCookies: Record<string, string> = {};
     for (const [domain, cookies] of this.jar) {
-      if (requestDomain === domain || requestDomain.endsWith('.' + domain)) {
+      if (requestDomain === domain || requestDomain.endsWith('.' + domain))
         Object.assign(allCookies, cookies);
-      }
     }
     return Object.entries(allCookies).map(([k, v]) => `${k}=${v}`).join('; ');
+  }
+
+  // Todos os cookies de todos os domínios (para X-pje-cookies)
+  serializeAll(): string {
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const cookies of this.jar.values()) {
+      for (const [name, value] of Object.entries(cookies)) {
+        if (!seen.has(name)) {
+          seen.add(name);
+          parts.push(`${name}=${value}`);
+        }
+      }
+    }
+    return parts.join('; ');
   }
 
   getCookie(domain: string, name: string): string | undefined {
@@ -60,11 +74,9 @@ export class CookieJar {
 
   exportAll(): Record<string, string> {
     const result: Record<string, string> = {};
-    for (const [domain, cookies] of this.jar) {
-      for (const [name, value] of Object.entries(cookies)) {
+    for (const [domain, cookies] of this.jar)
+      for (const [name, value] of Object.entries(cookies))
         result[`${domain}::${name}`] = value;
-      }
-    }
     return result;
   }
 
@@ -83,25 +95,17 @@ export class CookieJar {
     }
   }
 
-  debugDump(): string {
+  summary(): string {
     const parts: string[] = [];
-    for (const [domain, cookies] of this.jar) {
-      const names = Object.keys(cookies);
-      parts.push(`  ${domain}: [${names.join(', ')}]`);
-    }
-    return parts.join('\n');
+    for (const [domain, cookies] of this.jar)
+      parts.push(`${domain}(${Object.keys(cookies).join(',')})`);
+    return parts.join(' | ');
   }
 
   get size(): number {
     let count = 0;
     for (const cookies of this.jar.values()) count += Object.keys(cookies).length;
     return count;
-  }
-
-  summary(): string {
-    const parts: string[] = [];
-    for (const [domain, cookies] of this.jar) parts.push(`${domain}(${Object.keys(cookies).length})`);
-    return parts.join(', ');
   }
 
   clear(): void { this.jar.clear(); }

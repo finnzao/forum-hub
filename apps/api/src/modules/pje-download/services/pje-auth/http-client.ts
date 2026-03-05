@@ -16,22 +16,32 @@ export class PJEHttpClient {
     let currentBody: URLSearchParams | undefined = body;
 
     for (let i = 0; i < MAX_REDIRECTS; i++) {
-      const cookieStr = this.cookieJar.serializeForUrl(currentUrl);
+      const cookieStr = this.cookieJar.serializeForDomain(currentUrl);
 
-      if (i <= 6) {
+      if (i <= 8) {
         const domain = safeDomain(currentUrl);
+        const path = safePath(currentUrl);
         const cookieNames = cookieStr ? cookieStr.split('; ').map(c => c.split('=')[0]) : [];
-        console.log(`[PJE-AUTH]     → ${currentMethod} ${domain}${safePath(currentUrl)} cookies: [${cookieNames.join(', ')}]`);
+        console.log(`[PJE-AUTH]     → ${currentMethod} ${domain}${path} cookies: [${cookieNames.join(', ')}]`);
       }
 
       const headers: Record<string, string> = {
         'Cookie': cookieStr,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8',
       };
-      if (currentMethod === 'POST' && currentBody) {
+
+      // Origin/Referer corretos conforme doc seção 3.1
+      if (currentMethod === 'POST') {
         headers['Content-Type'] = 'application/x-www-form-urlencoded';
+        if (currentUrl.includes('sso.cloud.pje.jus.br')) {
+          headers['Origin'] = 'https://sso.cloud.pje.jus.br';
+          headers['Referer'] = currentUrl;
+        } else {
+          headers['Origin'] = 'https://pje.tjba.jus.br';
+          headers['Referer'] = currentUrl;
+        }
       }
 
       const res = await fetch(currentUrl, {
@@ -45,16 +55,17 @@ export class PJEHttpClient {
 
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get('location');
-        await res.text().catch(() => {});
+        await res.text().catch(() => { });
         if (!location) break;
 
         let nextUrl = resolveUrl(location, currentUrl);
 
+        // Preserva jsessionid da URL se presente
         const jsessionMatch = nextUrl.match(/;jsessionid=([^?&#]+)/);
         if (jsessionMatch) {
           const domain = safeDomain(nextUrl);
-          console.log(`[PJE-AUTH]     (URL rewrite) jsessionid found for ${domain}`);
           this.cookieJar.setCookie(domain, 'JSESSIONID', jsessionMatch[1]);
+          nextUrl = nextUrl.replace(/;jsessionid=[^?&#]+/, '');
         }
 
         console.log(`[PJE-AUTH]   redirect #${i + 1}: ${res.status} ${truncUrl(currentUrl)} → ${truncUrl(nextUrl)}`);
@@ -64,7 +75,8 @@ export class PJEHttpClient {
         continue;
       }
 
-      return { body: await res.text(), finalUrl: currentUrl, status: res.status };
+      const responseBody = await res.text();
+      return { body: responseBody, finalUrl: currentUrl, status: res.status };
     }
     throw new Error(`Excedido limite de ${MAX_REDIRECTS} redirects`);
   }
@@ -96,16 +108,18 @@ export class PJEHttpClient {
     return (await res.text()) as unknown as T;
   }
 
-  private buildRestHeaders(idUsuarioLocalizacao: string): Record<string, string> {
-    const cookieStr = this.cookieJar.serializeForUrl(PJE_REST_BASE);
+  // Headers conforme doc seção 6.1 — X-pje-cookies usa TODOS os cookies
+  buildRestHeaders(idUsuarioLocalizacao: string): Record<string, string> {
+    const domainCookies = this.cookieJar.serializeForDomain(PJE_REST_BASE);
+    const allCookies = this.cookieJar.serializeAll();
     return {
       'Content-Type': 'application/json',
       'X-pje-legacy-app': PJE_LEGACY_APP,
       'Origin': PJE_FRONTEND_ORIGIN,
       'Referer': `${PJE_FRONTEND_ORIGIN}/`,
-      'X-pje-cookies': cookieStr,
+      'X-pje-cookies': allCookies,          // TODOS os cookies (SSO + PJE)
       'X-pje-usuario-localizacao': idUsuarioLocalizacao,
-      'Cookie': cookieStr,
+      'Cookie': domainCookies,              // apenas cookies do domínio
     };
   }
 }

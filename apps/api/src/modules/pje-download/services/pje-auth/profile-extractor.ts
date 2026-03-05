@@ -1,200 +1,193 @@
 import type { PJEProfile, ProfileMapping } from './types';
 import { cleanText, decodeHtmlEntities, stripHtml } from './html-parser';
 
+// Tamanho de página real do PJE (confirmado via HAR: 5 perfis por página)
+export const PJE_PROFILES_PER_PAGE = 5;
+
 export function extractProfilesFromHtml(html: string): PJEProfile[] {
   const profiles: PJEProfile[] = [];
+  const activeFavoriteName = extractFavoriteFromThead(html);
+  const tbodyRows = extractTbodyRows(html);
 
-  const activeProfile = extractActiveProfileFromThead(html);
+  console.log(`[PJE-AUTH] Rows no tbody: ${tbodyRows.length}`);
 
-  const tbodyHtml = extractTbodyHtml(html);
-  const sortedTbodyIndices = extractTbodyIndices(tbodyHtml);
-
-  console.log(`[PJE-AUTH] Perfis tbody indices: [${sortedTbodyIndices.join(', ')}]`);
-
-  if (activeProfile) {
-    console.log(`[PJE-AUTH] Perfil ativo (thead): "${activeProfile}"`);
-
-    const maxTbodyIndex = sortedTbodyIndices.length > 0 ? Math.max(...sortedTbodyIndices) : -1;
-    const activeIndex = maxTbodyIndex + 1;
-    const parts = activeProfile.split(' / ');
-
+  // Perfil favorito do thead (índice -1)
+  if (activeFavoriteName) {
+    console.log(`[PJE-AUTH] Perfil favorito thead: "${activeFavoriteName}"`);
+    const parts = activeFavoriteName.split(' / ');
     profiles.push({
-      indice: activeIndex,
-      nome: activeProfile,
-      orgao: parts.length >= 2 ? parts[0].trim() : '',
+      indice: -1,
+      nome: activeFavoriteName,
+      orgao: parts[1]?.trim() || '',
       favorito: true,
     });
   }
 
-  for (const idx of sortedTbodyIndices) {
-    const profile = extractTbodyProfileRow(tbodyHtml, html, idx);
-    if (!profile) continue;
-
-    if (activeProfile && profile.nome.toLowerCase().trim() === activeProfile.toLowerCase().trim()) {
+  // Perfis regulares do tbody
+  for (const row of tbodyRows) {
+    if (!row.nome) continue;
+    // Pula duplicata do favorito
+    if (activeFavoriteName && row.nome.toLowerCase().trim() === activeFavoriteName.toLowerCase().trim())
       continue;
-    }
-
-    profiles.push(profile);
+    const parts = row.nome.split(' / ');
+    profiles.push({
+      indice: row.indice,
+      nome: row.nome,
+      orgao: parts[1]?.trim() || '',
+      favorito: row.favorito,
+    });
   }
 
-  profiles.sort((a, b) => {
-    if (a.favorito !== b.favorito) return a.favorito ? -1 : 1;
-    return a.indice - b.indice;
-  });
-
-  console.log(`[PJE-AUTH] Perfis: ${profiles.length}`);
-  for (const p of profiles) {
-    console.log(`  [${p.indice}] ${p.favorito ? '⭐ ' : '   '}${p.nome}`);
-  }
+  console.log(`[PJE-AUTH] Total perfis (página atual): ${profiles.length}`);
+  for (const p of profiles)
+    console.log(`  [${p.indice}] ${p.favorito ? '⭐' : '  '} ${p.nome}`);
 
   return profiles;
 }
 
-export function isActiveProfileIndex(html: string, profileIndex: number): boolean {
-  const mapping = buildProfileMapping(html);
-  return mapping.some((p) => p.virtualIndex === profileIndex && p.isActive);
+// Retorna os índices visíveis na página atual
+export function extractVisibleIndices(html: string): number[] {
+  return extractTbodyRows(html).map(r => r.indice);
 }
 
-export function resolveProfileIndex(html: string, profileIndex: number): number {
-  const mapping = buildProfileMapping(html);
-  const found = mapping.find((p) => p.virtualIndex === profileIndex);
-  return found ? found.tbodyIndex : profileIndex;
+// Verifica se há paginação
+export function hasPagination(html: string): boolean {
+  return html.includes('scPerfil');
 }
 
-function extractActiveProfileFromThead(html: string): string {
+// Extrai info do scroller: o formId inclui :j_id72 (confirmado via HAR)
+export function extractScrollerInfo(html: string): { formId: string; scrollerId: string } | null {
+  // Padrão real do PJE: id="papeisUsuarioForm:j_id72:scPerfil"
+  const m = html.match(/id="([^"]*:scPerfil)"/);
+  if (!m) return null;
+  // Remove o :scPerfil para obter o formId do scroller
+  const scrollerId = m[1];
+  const formId = scrollerId.replace(/:scPerfil$/, '');
+  return { formId, scrollerId };
+}
+
+// Extrai número total de páginas do scroller
+export function extractTotalPages(html: string): number {
+  // Pega todos os números (ativos e inativos) do scroller
+  const allNums: number[] = [];
+  for (const m of html.matchAll(/rich-datascr-(?:act|inact)[^>]*>(\d+)</g))
+    allNums.push(parseInt(m[1], 10));
+  return allNums.length > 0 ? Math.max(...allNums) : 1;
+}
+
+// Extrai a página atual do scroller
+export function extractCurrentPage(html: string): number {
+  const m = html.match(/rich-datascr-act[^>]*>(\d+)</);
+  return m ? parseInt(m[1], 10) : 1;
+}
+
+// Calcula em qual página o índice deve estar (5 perfis/pág, índices 0-based)
+export function getPageForIndex(profileIndex: number): number {
+  if (profileIndex < 0) return 1; // favorito sempre está no thead de toda página
+  return Math.floor(profileIndex / PJE_PROFILES_PER_PAGE) + 1;
+}
+
+// === Funções internas ===
+
+interface TbodyRow { indice: number; nome: string; favorito: boolean; }
+
+function extractTbodyRows(html: string): TbodyRow[] {
+  const rows: TbodyRow[] = [];
+
+  // Encontra tbody com perfis (contém j_id70 ou j_id68 + colPerfil)
+  const tbodys = [...html.matchAll(/<tbody[^>]*>([\s\S]*?)<\/tbody>/gi)];
+  let perfisBody = '';
+
+  for (const m of tbodys) {
+    if (m[1].includes('j_id70') || (m[1].includes('colPerfil') && m[1].includes('j_id68'))) {
+      perfisBody = m[1];
+      break;
+    }
+  }
+
+  if (!perfisBody) return rows;
+
+  // Extrai cada <tr> do tbody
+  for (const rowMatch of perfisBody.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const row = rowMatch[1];
+
+    // Extrai índice
+    const idxMatch = row.match(/dtPerfil:(\d+):(?:j_id70|j_id68|colPerfil|perfilInicial)/);
+    if (!idxMatch) continue;
+    const indice = parseInt(idxMatch[1], 10);
+
+    // Verifica favorito (estrela sem -disabled)
+    const favImg = row.match(/favorite-16x16(-disabled)?\.png/);
+    const favorito = favImg ? !favImg[1] : false;
+
+    // Extrai nome pelo link j_id70 (seleção de perfil)
+    const namePatterns = [
+      new RegExp(`dtPerfil:${indice}:j_id70['"'][^>]*>([\\s\\S]*?)</a>`, 'i'),
+      /colPerfil[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i,
+      /<a[^>]*onclick[^>]*jsfcljs[^>]*>([\s\S]*?)<\/a>/i,
+    ];
+
+    let nome = '';
+    for (const p of namePatterns) {
+      const nm = row.match(p);
+      if (nm?.[1]) {
+        nome = decodeHtmlEntities(stripHtml(nm[1]).trim());
+        if (nome.length > 3) break;
+      }
+    }
+
+    if (!nome || nome.length < 3) continue;
+    rows.push({ indice, nome, favorito });
+  }
+
+  return rows.sort((a, b) => a.indice - b.indice);
+}
+
+// Extrai nome do favorito do thead (somente se favorite-16x16.png presente, sem -disabled)
+function extractFavoriteFromThead(html: string): string {
   const theadMatch = html.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i);
   if (!theadMatch) return '';
 
-  const theadHtml = theadMatch[1];
-  const headerCellMatch = theadHtml.match(/id="papeisUsuarioForm:dtPerfil:j_id65"[^>]*>([\s\S]*?)<\/th>/i);
-  const searchScope = headerCellMatch ? headerCellMatch[1] : theadHtml;
+  const thead = theadMatch[1];
 
-  const links: string[] = [];
-  const linkRegex = /<a[^>]*>([\s\S]*?)<\/a>/gi;
-  let lm;
-  while ((lm = linkRegex.exec(searchScope)) !== null) {
-    const text = cleanText(lm[1]);
-    if (text.length > 3 && !text.includes('favorite')) {
-      links.push(text);
+  if (!thead.includes('favorite-16x16.png') || thead.includes('favorite-16x16-disabled.png'))
+    return '';
+
+  // Busca link j_id66 com texto do perfil
+  const patterns = [
+    /<a[^>]*id="[^"]*dtPerfil:j_id66"[^>]*>([\s\S]*?)<\/a>/i,
+    /<a[^>]*(?:onclick|href)[^>]*dtPerfil:j_id66[^>]*>([\s\S]*?)<\/a>/i,
+    /<a[^>]*onclick="[^"]*j_id66[^"]*"[^>]*>([\s\S]*?)<\/a>/i,
+  ];
+
+  for (const p of patterns) {
+    const m = thead.match(p);
+    if (m?.[1]) {
+      const text = decodeHtmlEntities(stripHtml(m[1]).trim());
+      if (text.length > 3 && !text.startsWith('function') && !text.startsWith('if(')) return text;
     }
   }
 
-  return links.length > 0 ? links.sort((a, b) => b.length - a.length)[0] : '';
+  // Fallback: qualquer link com texto razoável
+  const links = [...thead.matchAll(/<a[^>]*>([\s\S]*?)<\/a>/gi)]
+    .map(m => decodeHtmlEntities(stripHtml(m[1]).trim()))
+    .filter(t => t.length > 10 && !t.startsWith('function') && !t.startsWith('if(') && !t.includes('favorite'));
+
+  return links.sort((a, b) => b.length - a.length)[0] || '';
 }
 
-function extractTbodyHtml(html: string): string {
-  const tbodyMatch = html.match(/<tbody[^>]*id="papeisUsuarioForm:dtPerfil:tb"[^>]*>([\s\S]*?)<\/tbody>/i);
-  return tbodyMatch ? tbodyMatch[1] : '';
-}
-
-function extractTbodyIndices(tbodyHtml: string): number[] {
-  const indices = new Set<number>();
-  const regex = /papeisUsuarioForm:dtPerfil:(\d+):(?:perfilInicial|colPerfil|j_id68|j_id70)/g;
-  let m;
-  while ((m = regex.exec(tbodyHtml)) !== null) {
-    indices.add(parseInt(m[1], 10));
-  }
-  return [...indices].sort((a, b) => a - b);
-}
-
-function extractTbodyProfileRow(
-  tbodyHtml: string,
-  fullHtml: string,
-  idx: number,
-): PJEProfile | null {
-  const cellId = `papeisUsuarioForm:dtPerfil:${idx}:perfilInicial`;
-  let searchHtml = tbodyHtml;
-  let pos = tbodyHtml.indexOf(cellId);
-
-  if (pos < 0) {
-    searchHtml = fullHtml;
-    pos = fullHtml.indexOf(cellId);
-    if (pos < 0) {
-      pos = searchHtml.indexOf(`papeisUsuarioForm:dtPerfil:${idx}:j_id70`);
-      if (pos < 0) return null;
-    }
-  }
-
-  const before = searchHtml.slice(0, pos);
-  const trStart = before.lastIndexOf('<tr');
-  if (trStart < 0) return null;
-
-  const after = searchHtml.slice(trStart);
-  const trClose = after.match(/<\/tr>/i);
-  if (!trClose?.index) return null;
-
-  const row = after.slice(0, trClose.index + 5);
-
-  const imgMatch = row.match(/src="[^"]*?(favorite-16x16)(-disabled)?\.png"/i);
-  const favorito = imgMatch ? !imgMatch[2] : false;
-
-  const nome = extractProfileName(row, idx);
-  const parts = nome.split(' / ');
-
-  return {
-    indice: idx,
-    nome,
-    orgao: parts.length >= 2 ? parts[0].trim() : '',
-    favorito,
-  };
-}
-
-function extractProfileName(row: string, idx: number): string {
-  const specificPattern = new RegExp(
-    `papeisUsuarioForm:dtPerfil:${idx}:j_id70[\\s\\S]{0,300}?<a[^>]*>([\\s\\S]*?)<\\/a>`, 'i'
-  );
-  const specific = row.match(specificPattern);
-  if (specific?.[1]) {
-    const t = cleanText(specific[1]);
-    if (t.length > 3) return t;
-  }
-
-  const links: string[] = [];
-  for (const lm of row.matchAll(/<a[^>]*>([\s\S]*?)<\/a>/gi)) {
-    const t = cleanText(lm[1]);
-    if (t.length > 3 && !/^selecionar$/i.test(t)) links.push(t);
-  }
-  if (links.length > 0) return links.sort((a, b) => b.length - a.length)[0];
-
-  const tds: string[] = [];
-  const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-  let td;
-  while ((td = tdRe.exec(row)) !== null) {
-    const t = decodeHtmlEntities(stripHtml(td[1]).trim());
-    if (t.length > 3 && !/^selecionar$/i.test(t)) tds.push(t);
-  }
-  if (tds.length > 0) return tds.sort((a, b) => b.length - a.length)[0];
-
-  return `Perfil ${idx}`;
-}
-
-function buildProfileMapping(html: string): ProfileMapping[] {
+// Constrói mapeamento para navegação de perfis
+export function buildProfileMapping(html: string): ProfileMapping[] {
   const result: ProfileMapping[] = [];
-  const activeProfile = extractActiveProfileFromThead(html);
-  const tbodyHtml = extractTbodyHtml(html);
-  const sortedTbodyIndices = extractTbodyIndices(tbodyHtml);
-  const maxTbodyIndex = sortedTbodyIndices.length > 0 ? Math.max(...sortedTbodyIndices) : -1;
+  const favName = extractFavoriteFromThead(html);
+  const rows = extractTbodyRows(html);
 
-  if (activeProfile) {
-    result.push({
-      virtualIndex: maxTbodyIndex + 1,
-      tbodyIndex: -1,
-      nome: activeProfile,
-      isActive: true,
-    });
-  }
+  if (favName)
+    result.push({ virtualIndex: -1, tbodyIndex: -1, nome: favName, isActive: true });
 
-  for (const idx of sortedTbodyIndices) {
-    const profile = extractTbodyProfileRow(tbodyHtml, html, idx);
-    if (!profile) continue;
-    if (activeProfile && profile.nome.toLowerCase().trim() === activeProfile.toLowerCase().trim()) continue;
-
-    result.push({
-      virtualIndex: idx,
-      tbodyIndex: idx,
-      nome: profile.nome,
-      isActive: false,
-    });
+  for (const row of rows) {
+    if (favName && row.nome.toLowerCase().trim() === favName.toLowerCase().trim()) continue;
+    result.push({ virtualIndex: row.indice, tbodyIndex: row.indice, nome: row.nome, isActive: false });
   }
 
   return result;

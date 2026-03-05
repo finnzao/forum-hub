@@ -1,6 +1,7 @@
 import type { StoredSession, PersistedSession } from './types';
 import { CPF_SESSION_TTL, SESSION_STORE_TTL } from './constants';
 
+// Sessões persistidas por CPF (sobrevivem entre requests)
 const cpfSessions = new Map<string, PersistedSession>();
 
 export function getPersistedSession(cpf: string): PersistedSession | null {
@@ -21,6 +22,7 @@ export function clearPersistedSession(cpf: string): void {
   cpfSessions.delete(cpf);
 }
 
+// Store temporário para sessões ativas (2FA, seleção de perfil)
 class SessionStore {
   private store = new Map<string, StoredSession>();
 
@@ -29,8 +31,7 @@ class SessionStore {
   }
 
   set(id: string, data: StoredSession): void {
-    data.createdAt = Date.now();
-    this.store.set(id, data);
+    this.store.set(id, { ...data, createdAt: Date.now() });
   }
 
   get(id: string): StoredSession | undefined {
@@ -49,9 +50,8 @@ class SessionStore {
 
   private cleanup(): void {
     const now = Date.now();
-    for (const [id, s] of this.store) {
+    for (const [id, s] of this.store)
       if (now - (s.createdAt || 0) > SESSION_STORE_TTL) this.store.delete(id);
-    }
   }
 }
 

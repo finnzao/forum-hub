@@ -16,7 +16,7 @@ export interface PJEUserInfo {
 }
 
 export interface PJEProfile {
-  indice: number;
+  indice: number;   // -1 para favorito, 0..N para regulares
   nome: string;
   orgao: string;
   favorito: boolean;

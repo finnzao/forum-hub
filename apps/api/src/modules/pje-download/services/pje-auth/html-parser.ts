@@ -15,8 +15,8 @@ export function decodeHtmlEntities(text: string): string {
     .replace(/&agrave;/g, 'à').replace(/&egrave;/g, 'è')
     .replace(/&acirc;/g, 'â').replace(/&ecirc;/g, 'ê').replace(/&ocirc;/g, 'ô')
     .replace(/&uuml;/g, 'ü').replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_, c) => String.fromCharCode(parseInt(c, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, c) => String.fromCharCode(parseInt(c, 16)))
     .trim();
 }
 
@@ -30,66 +30,47 @@ export function stripHtml(html: string): string {
 }
 
 export function cleanText(html: string): string {
-  return decodeHtmlEntities(
-    html
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-  );
+  return decodeHtmlEntities(stripHtml(html));
 }
 
 export function extractViewState(html: string): string | null {
-  const strategies: Array<() => string | null> = [
+  const strategies = [
+    // Dentro do form papeisUsuarioForm
     () => {
-      const formMatch = html.match(/<form[^>]+(?:id|name)="papeisUsuarioForm"[^>]*>([\s\S]*?)<\/form>/i);
-      if (!formMatch) return null;
-      return extractViewStateFromFragment(formMatch[1]);
+      const m = html.match(/<form[^>]+(?:id|name)="papeisUsuarioForm"[^>]*>([\s\S]*?)<\/form>/i);
+      return m ? extractVSFromFragment(m[1]) : null;
     },
+    // Qualquer form POST
     () => {
       for (const fm of html.matchAll(/<form[^>]+method="post"[^>]*>([\s\S]*?)<\/form>/gi)) {
-        const vs = extractViewStateFromFragment(fm[1]);
+        const vs = extractVSFromFragment(fm[1]);
         if (vs) return vs;
       }
       return null;
     },
-    () => {
-      const m = html.match(/<input[^>]+name="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i);
-      return m?.[1] ?? null;
-    },
-    () => {
-      const m = html.match(/<input[^>]+value="([^"]+)"[^>]+name="javax\.faces\.ViewState"/i);
-      return m?.[1] ?? null;
-    },
-    () => {
-      const m = html.match(/<input[^>]+id="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i);
-      return m?.[1] ?? null;
-    },
-    () => {
-      const m = html.match(/javax\.faces\.ViewState[\s\S]{0,300}?value="([^"]{10,})"/i);
-      return m?.[1] ?? null;
-    },
+    () => html.match(/<input[^>]+name="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i)?.[1] ?? null,
+    () => html.match(/<input[^>]+value="([^"]+)"[^>]+name="javax\.faces\.ViewState"/i)?.[1] ?? null,
+    () => html.match(/<input[^>]+id="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i)?.[1] ?? null,
+    () => html.match(/javax\.faces\.ViewState[\s\S]{0,300}?value="([^"]{10,})"/i)?.[1] ?? null,
   ];
 
   for (let i = 0; i < strategies.length; i++) {
     try {
-      const result = strategies[i]();
-      if (result?.length) {
-        console.log(`[PJE-AUTH] ViewState via estratégia ${i + 1} (${result.length} chars)`);
-        return result;
+      const r = strategies[i]();
+      if (r?.length) {
+        console.log(`[PJE-AUTH] ViewState estratégia ${i + 1} (${r.length} chars)`);
+        return r;
       }
     } catch { }
   }
   return null;
 }
 
-function extractViewStateFromFragment(fragment: string): string | null {
+function extractVSFromFragment(fragment: string): string | null {
   const patterns = [
     /<input[^>]+name="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i,
     /<input[^>]+value="([^"]+)"[^>]+name="javax\.faces\.ViewState"/i,
     /<input[^>]+id="javax\.faces\.ViewState"[^>]+value="([^"]+)"/i,
-    /<input[^>]+value="([^"]+)"[^>]+id="javax\.faces\.ViewState"/i,
   ];
   for (const p of patterns) {
     const m = fragment.match(p);
@@ -103,61 +84,66 @@ export function extractFormFields(html: string, baseUrl: string): FormFieldsResu
   let formHtml = '';
   let actionUrl: string | null = null;
 
-  const kcFormMatch = html.match(/<form[^>]+id="kc-form-login"[^>]*>([\s\S]*?)<\/form>/i);
-  if (kcFormMatch) {
-    formHtml = kcFormMatch[0];
-    const actionMatch = kcFormMatch[0].match(/action="([^"]+)"/i);
-    if (actionMatch) {
-      const a = actionMatch[1].replace(/&amp;/g, '&');
+  // Prioriza form com id kc-form-login (SSO Keycloak)
+  const kcMatch = html.match(/<form[^>]+id="kc-form-login"[^>]*>([\s\S]*?)<\/form>/i);
+  if (kcMatch) {
+    formHtml = kcMatch[0];
+    const am = kcMatch[0].match(/action="([^"]+)"/i);
+    if (am) {
+      const a = am[1].replace(/&amp;/g, '&');
       actionUrl = a.startsWith('http') ? a : resolveUrl(a, baseUrl);
     }
   }
 
   if (!actionUrl) {
-    const postFormMatch = html.match(/<form[^>]+method="post"[^>]*>([\s\S]*?)<\/form>/i)
+    const postMatch = html.match(/<form[^>]+method="post"[^>]*>([\s\S]*?)<\/form>/i)
       || html.match(/<form[^>]*>([\s\S]*?)<\/form>/i);
-    if (postFormMatch) {
-      formHtml = postFormMatch[0];
-      const actionMatch = postFormMatch[0].match(/action="([^"]+)"/i);
-      if (actionMatch) {
-        const a = actionMatch[1].replace(/&amp;/g, '&');
+    if (postMatch) {
+      formHtml = postMatch[0];
+      const am = postMatch[0].match(/action="([^"]+)"/i);
+      if (am) {
+        const a = am[1].replace(/&amp;/g, '&');
         actionUrl = a.startsWith('http') ? a : resolveUrl(a, baseUrl);
       }
     }
   }
 
   if (!actionUrl) {
-    const actionMatch = html.match(/action="([^"]+)"/i);
-    if (actionMatch) {
-      const a = actionMatch[1].replace(/&amp;/g, '&');
+    const am = html.match(/action="([^"]+)"/i);
+    if (am) {
+      const a = am[1].replace(/&amp;/g, '&');
       actionUrl = a.startsWith('http') ? a : resolveUrl(a, baseUrl);
     }
     return { actionUrl, fields };
   }
 
+  // Extrai campos hidden e text (não submit/button)
   const inputRegex = /<input[^>]*>/gi;
-  let inputMatch;
-  while ((inputMatch = inputRegex.exec(formHtml)) !== null) {
-    const tag = inputMatch[0];
-    const nameMatch = tag.match(/name="([^"]*)"/i);
-    if (!nameMatch) continue;
-    const name = nameMatch[1];
-    const typeMatch = tag.match(/type="([^"]*)"/i);
-    const type = typeMatch ? typeMatch[1].toLowerCase() : 'text';
-    if (type === 'submit' || type === 'button' || type === 'image') continue;
-    const valueMatch = tag.match(/value="([^"]*)"/i);
-    const value = valueMatch ? valueMatch[1].replace(/&amp;/g, '&') : '';
-    fields[name] = value;
+  let m;
+  while ((m = inputRegex.exec(formHtml)) !== null) {
+    const tag = m[0];
+    const nameM = tag.match(/name="([^"]*)"/i);
+    if (!nameM) continue;
+    const typeM = tag.match(/type="([^"]*)"/i);
+    const type = typeM?.[1].toLowerCase() ?? 'text';
+    if (['submit', 'button', 'image'].includes(type)) continue;
+    const valueM = tag.match(/value="([^"]*)"/i);
+    fields[nameM[1]] = valueM ? valueM[1].replace(/&amp;/g, '&') : '';
   }
 
-  console.log(`[PJE-AUTH] Form fields extracted: [${Object.keys(fields).join(', ')}]`);
+  console.log(`[PJE-AUTH] Form fields: [${Object.keys(fields).join(', ')}]`);
   return { actionUrl, fields };
 }
 
+// Detecção de 2FA: URL contém authenticate E body tem padrões OTP
 export function detect2FA(html: string, url: string): boolean {
   const lower = html.toLowerCase();
-  return ['codigo enviado', 'digite o codigo', 'código de verificação', 'verification code', 'otp', 'two-factor']
-    .some((p) => lower.includes(p)) || url.includes('otp');
+  const bodyHas2FA = ['codigo enviado', 'digit', 'código', 'verification code', 'otp', 'two-factor', 'totp']
+    .some(p => lower.includes(p));
+  const urlHas2FA = url.includes('otp') || url.includes('totp');
+  // Só detecta se URL ainda está no SSO (não voltou para pje.tjba.jus.br)
+  const stillInSSO = url.includes('sso.cloud.pje.jus.br');
+  return (bodyHas2FA || urlHas2FA) && stillInSSO;
 }
 
 export function extractLoginError(html: string): string | null {
@@ -184,11 +170,20 @@ export function extractLoginError(html: string): string | null {
   return null;
 }
 
+// Verifica se URL é do painel PJE (autenticado)
 export function isLoggedInUrl(url: string): boolean {
-  return url.includes('/pje/') && (
-    url.includes('painel') || url.includes('dev.seam') ||
-    url.endsWith('/pje/') || url.includes('ng2')
-  );
+  if (!url.includes('pje.tjba.jus.br')) return false;
+  return url.includes('painel') ||
+    url.includes('dev.seam') ||
+    url.includes('ng2') ||
+    url.includes('token.seam') || // token.seam = primeiro destino após SSO
+    url.endsWith('/pje/') ||
+    url.match(/\/pje\/(Processo|magistrado|servidor|advogado)/) !== null;
+}
+
+// Verifica se está na página de seleção de perfis
+export function isProfileSelectionPage(html: string): boolean {
+  return html.includes('papeisUsuarioForm') || html.includes('dtPerfil');
 }
 
 export function resolveUrl(location: string, base: string): string {
