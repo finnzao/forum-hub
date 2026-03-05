@@ -1,21 +1,34 @@
 import type { FormFieldsResult } from './types';
 
+// Mapa completo de entidades HTML com foco nas que aparecem em nomes do PJE
+const HTML_ENTITY_MAP: Record<string, string> = {
+  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
+  '&#39;': "'", '&apos;': "'", '&nbsp;': ' ', '&middot;': '·',
+  // Minúsculas
+  '&ccedil;': 'ç', '&atilde;': 'ã', '&otilde;': 'õ',
+  '&aacute;': 'á', '&eacute;': 'é', '&iacute;': 'í', '&oacute;': 'ó', '&uacute;': 'ú',
+  '&agrave;': 'à', '&egrave;': 'è', '&igrave;': 'ì', '&ograve;': 'ò', '&ugrave;': 'ù',
+  '&acirc;': 'â',  '&ecirc;': 'ê',  '&icirc;': 'î',  '&ocirc;': 'ô',  '&ucirc;': 'û',
+  '&atild;': 'ã',  '&otild;': 'õ',  '&ntilde;': 'ñ',
+  '&auml;': 'ä', '&euml;': 'ë', '&iuml;': 'ï', '&ouml;': 'ö', '&uuml;': 'ü',
+  '&aring;': 'å', '&aelig;': 'æ', '&szlig;': 'ß',
+  '&ordf;': 'ª', '&ordm;': 'º',   // ← CRÍTICO: "11ª VARA", "1º"
+  // Maiúsculas
+  '&Ccedil;': 'Ç', '&Atilde;': 'Ã', '&Otilde;': 'Õ',
+  '&Aacute;': 'Á', '&Eacute;': 'É', '&Iacute;': 'Í', '&Oacute;': 'Ó', '&Uacute;': 'Ú',
+  '&Agrave;': 'À', '&Egrave;': 'È', '&Igrave;': 'Ì', '&Ograve;': 'Ò', '&Ugrave;': 'Ù',
+  '&Acirc;': 'Â',  '&Ecirc;': 'Ê',  '&Icirc;': 'Î',  '&Ocirc;': 'Ô',  '&Ucirc;': 'Û',
+  '&Auml;': 'Ä', '&Euml;': 'Ë', '&Iuml;': 'Ï', '&Ouml;': 'Ö', '&Uuml;': 'Ü',
+  '&Aring;': 'Å', '&AElig;': 'Æ', '&Ntilde;': 'Ñ',
+};
+
 export function decodeHtmlEntities(text: string): string {
   return text
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
-    .replace(/&ccedil;/g, 'ç').replace(/&Ccedil;/g, 'Ç')
-    .replace(/&atilde;/g, 'ã').replace(/&Atilde;/g, 'Ã')
-    .replace(/&otilde;/g, 'õ').replace(/&Otilde;/g, 'Õ')
-    .replace(/&aacute;/g, 'á').replace(/&Aacute;/g, 'Á')
-    .replace(/&eacute;/g, 'é').replace(/&Eacute;/g, 'É')
-    .replace(/&iacute;/g, 'í').replace(/&Iacute;/g, 'Í')
-    .replace(/&oacute;/g, 'ó').replace(/&Oacute;/g, 'Ó')
-    .replace(/&uacute;/g, 'ú').replace(/&Uacute;/g, 'Ú')
-    .replace(/&agrave;/g, 'à').replace(/&egrave;/g, 'è')
-    .replace(/&acirc;/g, 'â').replace(/&ecirc;/g, 'ê').replace(/&ocirc;/g, 'ô')
-    .replace(/&uuml;/g, 'ü').replace(/&nbsp;/g, ' ')
+    // Named entities via mapa
+    .replace(/&[a-zA-Z]+;/g, (entity) => HTML_ENTITY_MAP[entity] ?? entity)
+    // Numeric decimal: &#186; → 'º'
     .replace(/&#(\d+);/g, (_, c) => String.fromCharCode(parseInt(c, 10)))
+    // Numeric hex: &#xBA; → 'º'
     .replace(/&#x([0-9a-fA-F]+);/g, (_, c) => String.fromCharCode(parseInt(c, 16)))
     .trim();
 }
