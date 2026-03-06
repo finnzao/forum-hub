@@ -1,11 +1,7 @@
-// ============================================================
-// apps/web/src/app/componentes/pje-download/index.ts
-// Barrel export — componentes PJE Download
-// ============================================================
-
 export { EtapaLogin } from './EtapaLogin';
 export { EtapaPerfil } from './EtapaPerfil';
 export { EtapaDownload } from './EtapaDownload';
+export { EtapaAdvogados } from './EtapaAdvogados';
 export { CardJob } from './CardJob';
 export { PainelLogs } from './PainelLogs';
 

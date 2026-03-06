@@ -3,12 +3,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Download, ArrowLeft, RefreshCw, LogOut,
-  Lock, User, ClipboardList, History,
+  Lock, User, ClipboardList, History, FileSpreadsheet,
 } from 'lucide-react';
 import Link from 'next/link';
 
 import {
-  EtapaLogin, EtapaPerfil, EtapaDownload, CardJob, PainelLogs,
+  EtapaLogin, EtapaPerfil, EtapaDownload, EtapaAdvogados, CardJob, PainelLogs,
   type EtapaWizard, type SessaoPJE, type PerfilPJE,
   type DownloadJobResponse, type PJEDownloadProgress,
   type ParametrosDownload, type EntradaLog,
@@ -22,6 +22,8 @@ import {
 } from '../../componentes/pje-download/api';
 
 import { Cabecalho } from '../../componentes/layout/Cabecalho';
+
+type AbaDownload = 'processos' | 'advogados';
 
 const ETAPAS_WIZARD: { id: EtapaWizard; rotulo: string; icone: React.ReactNode }[] = [
   { id: 'login', rotulo: 'Login', icone: <Lock size={16} /> },
@@ -69,9 +71,7 @@ function extrairMensagemErro(err: unknown): string {
     if (err.status === 0) return 'Servidor indisponível. Verifique se a API está em execução.';
     return err.message;
   }
-  if (err instanceof TypeError && err.message === 'Failed to fetch') {
-    return 'Não foi possível conectar ao servidor.';
-  }
+  if (err instanceof TypeError && err.message === 'Failed to fetch') return 'Não foi possível conectar ao servidor.';
   if (err instanceof Error) return err.message;
   return 'Erro desconhecido.';
 }
@@ -103,6 +103,7 @@ export default function PaginaDownloadPJE() {
   const [etapa, setEtapa] = useState<EtapaWizard>('login');
   const [sessao, setSessao] = useState<SessaoPJE>({ autenticado: false });
   const [credenciais, setCredenciais] = useState<{ cpf: string; password: string } | null>(null);
+  const [abaAtiva, setAbaAtiva] = useState<AbaDownload>('processos');
 
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -112,7 +113,6 @@ export default function PaginaDownloadPJE() {
   const [jobExpandido, setJobExpandido] = useState<string | null>(null);
 
   const { logs, addLog, limpar: limparLogs } = useUiLogs();
-
   const jobsRef = useRef(jobs);
   jobsRef.current = jobs;
 
@@ -128,41 +128,21 @@ export default function PaginaDownloadPJE() {
     setCarregando(true);
     setErro(null);
     addLog('info', 'AUTH', `Iniciando login para CPF ***${cpf.slice(-4)}`);
-
     try {
       const result = await loginPJE({ cpf, password: senha });
-
       if (result.needs2FA) {
-        addLog('warn', 'AUTH', '2FA necessário — aguardando código via email');
+        addLog('warn', 'AUTH', '2FA necessário');
         setCredenciais({ cpf, password: senha });
         setSessao((prev) => ({ ...prev, sessionId: result.sessionId }));
         setEtapa('2fa');
       } else if (result.user) {
-        addLog('success', 'AUTH', `Login OK — ${result.user.nomeUsuario}`, {
-          usuario: result.user.nomeUsuario,
-          perfil: result.user.perfil,
-          localizacao: result.user.idUsuarioLocalizacaoMagistradoServidor,
-        });
-        setSessao({
-          autenticado: true,
-          sessionId: result.sessionId,
-          usuario: result.user,
-          perfis: result.profiles || [],
-        });
+        addLog('success', 'AUTH', `Login OK — ${result.user.nomeUsuario}`);
+        setSessao({ autenticado: true, sessionId: result.sessionId, usuario: result.user, perfis: result.profiles || [] });
         setCredenciais({ cpf, password: senha });
-
-        if (result.profiles && result.profiles.length > 0) {
-          setEtapa('perfil');
-          addLog('info', 'AUTH', `${result.profiles.length} perfis disponíveis`,
-            result.profiles.map(p => ({ nome: p.nome, orgao: p.orgao, indice: p.indice }))
-          );
-        } else {
-          addLog('warn', 'AUTH', 'Nenhum perfil retornado — indo direto para download');
-          setEtapa('download');
-        }
+        setEtapa(result.profiles?.length ? 'perfil' : 'download');
       } else {
-        const msg = 'Falha na autenticação — resposta inesperada do servidor.';
-        addLog('error', 'AUTH', msg, { resposta: result });
+        const msg = 'Falha na autenticação.';
+        addLog('error', 'AUTH', msg);
         setErro(msg);
       }
     } catch (err: any) {
@@ -177,31 +157,20 @@ export default function PaginaDownloadPJE() {
   const handleEnviar2FA = useCallback(async (codigo: string) => {
     setCarregando(true);
     setErro(null);
-    addLog('info', '2FA', `Enviando código: ***${codigo.slice(-2)}`);
-
+    addLog('info', '2FA', `Enviando código`);
     try {
       const sid = sessao.sessionId || 'unknown';
       const result = await enviar2FA(sid, codigo);
-
       if (result.user) {
         addLog('success', '2FA', `Verificado — ${result.user.nomeUsuario}`);
-        setSessao({
-          autenticado: true,
-          sessionId: result.sessionId || sid,
-          usuario: result.user,
-          perfis: result.profiles || [],
-        });
+        setSessao({ autenticado: true, sessionId: result.sessionId || sid, usuario: result.user, perfis: result.profiles || [] });
         setEtapa(result.profiles?.length ? 'perfil' : 'download');
       } else if (result.needs2FA) {
-        setSessao((prev) => ({ ...prev, sessionId: result.sessionId || prev.sessionId }));
-        setErro('Código inválido ou expirado. Tente novamente.');
-        addLog('warn', '2FA', 'Código inválido — tente novamente');
+        setErro('Código inválido ou expirado.');
       } else {
-        setErro('Resposta inesperada do servidor.');
-        addLog('error', '2FA', 'Resposta inesperada', { resposta: result });
+        setErro('Resposta inesperada.');
       }
     } catch (err: any) {
-      addLog('error', '2FA', extrairMensagemErro(err), extrairDadosErro(err));
       setErro(extrairMensagemErro(err));
     } finally {
       setCarregando(false);
@@ -211,48 +180,23 @@ export default function PaginaDownloadPJE() {
   const handleSelecionarPerfil = useCallback(async (perfil: PerfilPJE) => {
     setCarregando(true);
     setErro(null);
-    addLog('info', 'PERFIL', `Selecionando: "${perfil.nome}" (índice ${perfil.indice})`, {
-      nome: perfil.nome, orgao: perfil.orgao, indice: perfil.indice,
-    });
-
+    addLog('info', 'PERFIL', `Selecionando: "${perfil.nome}"`);
     try {
       const sid = sessao.sessionId;
-      if (!sid) {
-        addLog('warn', 'PERFIL', 'Sessão expirada — redirecionando para login');
-        handleLogout();
-        return;
-      }
-
+      if (!sid) { handleLogout(); return; }
       const result = await selecionarPerfil(sid, perfil.indice);
-
       if (result.tasks) {
-        addLog('success', 'PERFIL', `Perfil selecionado — ${result.tasks.length} tarefas, ${result.tags.length} etiquetas`, {
-          tarefas: result.tasks.length,
-          favoritas: result.favoriteTasks.length,
-          etiquetas: result.tags.length,
-          listaTarefas: result.tasks.slice(0, 5).map(t => `${t.nome} (${t.quantidadePendente})`),
-        });
-
+        addLog('success', 'PERFIL', `OK — ${result.tasks.length} tarefas`);
         setSessao((prev) => ({
-          ...prev,
-          perfilSelecionado: perfil,
-          tarefas: result.tasks,
-          tarefasFavoritas: result.favoriteTasks,
-          etiquetas: result.tags,
+          ...prev, perfilSelecionado: perfil,
+          tarefas: result.tasks, tarefasFavoritas: result.favoriteTasks, etiquetas: result.tags,
         }));
         setEtapa('download');
       } else {
-        addLog('error', 'PERFIL', 'Falha ao selecionar perfil', { resposta: result });
         setErro('Falha ao selecionar perfil.');
       }
     } catch (err: any) {
-      if (isSessionExpiredError(err)) {
-        addLog('warn', 'PERFIL', 'Sessão PJE expirada — redirecionando para login');
-        handleLogout();
-        return;
-      }
-
-      addLog('error', 'PERFIL', extrairMensagemErro(err), extrairDadosErro(err));
+      if (isSessionExpiredError(err)) { handleLogout(); return; }
       setErro(extrairMensagemErro(err));
     } finally {
       setCarregando(false);
@@ -260,22 +204,16 @@ export default function PaginaDownloadPJE() {
   }, [addLog, sessao.sessionId, handleLogout]);
 
   const handleCriarJob = useCallback(async (params: ParametrosDownload) => {
-    if (!credenciais) { setErro('Sessão expirada. Faça login novamente.'); return; }
+    if (!credenciais) { setErro('Sessão expirada.'); return; }
     setCarregando(true);
     setErro(null);
-    addLog('info', 'JOB', `Criando job: modo=${params.mode}`, params);
-
+    addLog('info', 'JOB', `Criando job: modo=${params.mode}`);
     try {
-      const novoJob = await criarJob({
-        ...params,
-        credentials: credenciais,
-        pjeSessionId: sessao.sessionId,
-      });
-      addLog('success', 'JOB', `Job criado: ${novoJob.id.slice(0, 8)}`, { id: novoJob.id, modo: novoJob.mode, status: novoJob.status });
+      const novoJob = await criarJob({ ...params, credentials: credenciais, pjeSessionId: sessao.sessionId });
+      addLog('success', 'JOB', `Job criado: ${novoJob.id.slice(0, 8)}`);
       setJobs((prev) => [novoJob, ...prev]);
       setJobExpandido(novoJob.id);
     } catch (err: any) {
-      addLog('error', 'JOB', extrairMensagemErro(err), extrairDadosErro(err));
       setErro(extrairMensagemErro(err));
     } finally {
       setCarregando(false);
@@ -283,60 +221,33 @@ export default function PaginaDownloadPJE() {
   }, [credenciais, sessao.sessionId, addLog]);
 
   const carregarJobs = useCallback(async () => {
-    try {
-      const data = await listarJobs(20, 0);
-      setJobs(data.jobs || []);
-    } catch {
-      // silencioso
-    }
+    try { const data = await listarJobs(20, 0); setJobs(data.jobs || []); } catch { }
   }, []);
 
   const carregarProgresso = useCallback(async () => {
     const ativos = jobsRef.current.filter((j) => isJobActive(j.status));
-    if (ativos.length === 0) return;
-
     for (const job of ativos) {
-      try {
-        const p = await obterProgresso(job.id);
-        if (p) setMapaProgresso((prev) => ({ ...prev, [job.id]: p }));
-      } catch {
-        // silencioso
-      }
+      try { const p = await obterProgresso(job.id); if (p) setMapaProgresso((prev) => ({ ...prev, [job.id]: p })); } catch { }
     }
   }, []);
 
   useEffect(() => {
     if (etapa !== 'download') return;
-
     carregarJobs();
-
     const interval = setInterval(() => {
-      const temAtivos = jobsRef.current.some((j) => isJobActive(j.status));
-      if (temAtivos) {
-        carregarJobs();
-        carregarProgresso();
-      }
+      if (jobsRef.current.some((j) => isJobActive(j.status))) { carregarJobs(); carregarProgresso(); }
     }, 10_000);
-
     return () => clearInterval(interval);
   }, [etapa, carregarJobs, carregarProgresso]);
 
   const handleVoltarPerfil = useCallback(() => {
-    addLog('info', 'NAV', 'Voltando para seleção de perfil');
     setEtapa('perfil');
     setErro(null);
-  }, [addLog]);
+  }, []);
 
   const handleCancelar = useCallback(async (jobId: string) => {
-    addLog('info', 'JOB', `Cancelando job ${jobId.slice(0, 8)}`);
-    try {
-      await cancelarJob(jobId);
-      addLog('success', 'JOB', `Cancelado`);
-      carregarJobs();
-    } catch (err: any) {
-      addLog('error', 'JOB', extrairMensagemErro(err), extrairDadosErro(err));
-    }
-  }, [addLog, carregarJobs]);
+    try { await cancelarJob(jobId); carregarJobs(); } catch { }
+  }, [carregarJobs]);
 
   const etapaAtual: EtapaWizard = etapa === '2fa' ? 'login' : etapa;
   const mostrandoDownload = etapa === 'download' && sessao.perfilSelecionado;
@@ -384,15 +295,44 @@ export default function PaginaDownloadPJE() {
         {mostrandoDownload ? (
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
             <div className="lg:col-span-3">
-              <EtapaDownload
-                perfil={sessao.perfilSelecionado!}
-                tarefas={sessao.tarefas || []}
-                tarefasFavoritas={sessao.tarefasFavoritas || []}
-                etiquetas={sessao.etiquetas || []}
-                carregando={carregando} erro={erro}
-                onCriarJob={handleCriarJob} onVoltar={handleVoltarPerfil}
-              />
+              {/* Abas: Processos | Advogados */}
+              <div className="flex border-b-2 border-slate-200 mb-6">
+                <button type="button" onClick={() => setAbaAtiva('processos')}
+                  className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 -mb-[2px] transition-colors ${
+                    abaAtiva === 'processos' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}>
+                  <Download size={16} /> Download Processos
+                </button>
+                <button type="button" onClick={() => setAbaAtiva('advogados')}
+                  className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 -mb-[2px] transition-colors ${
+                    abaAtiva === 'advogados' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}>
+                  <FileSpreadsheet size={16} /> Planilha Advogados
+                </button>
+              </div>
+
+              {abaAtiva === 'processos' ? (
+                <EtapaDownload
+                  perfil={sessao.perfilSelecionado!}
+                  tarefas={sessao.tarefas || []}
+                  tarefasFavoritas={sessao.tarefasFavoritas || []}
+                  etiquetas={sessao.etiquetas || []}
+                  carregando={carregando} erro={erro}
+                  onCriarJob={handleCriarJob} onVoltar={handleVoltarPerfil}
+                />
+              ) : (
+                <EtapaAdvogados
+                  perfil={sessao.perfilSelecionado!}
+                  tarefas={sessao.tarefas || []}
+                  tarefasFavoritas={sessao.tarefasFavoritas || []}
+                  etiquetas={sessao.etiquetas || []}
+                  credenciais={credenciais!}
+                  sessionId={sessao.sessionId}
+                  onVoltar={handleVoltarPerfil}
+                />
+              )}
             </div>
+
             <div className="lg:col-span-2">
               <div className="sticky top-8">
                 <div className="flex items-center justify-between mb-4">

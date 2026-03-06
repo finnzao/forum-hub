@@ -1,25 +1,25 @@
-// ============================================================
-// apps/api/src/modules/pje-download/index.ts
-// Module — registra rotas PJE Download (modo in-memory)
-// Sem Redis, sem PostgreSQL. Ideal para desenvolvimento/testes.
-// ============================================================
-
 import type { FastifyInstance } from 'fastify';
 import { PJEDownloadRepositoryMemory } from './repositories/pje-download.repository.memory';
 import { PJEDownloadService } from './services/pje-download.service';
 import { pjeDownloadRoutes } from './controllers/pje-download.controller';
 import { PJEDownloadWorker } from './services/pje-download-worker';
+import { PjeAdvogadosService } from './services/pje-advogados/index';
+import { pjeAdvogadosRoutes } from './controllers/pje-advogados.controller';
 
 export async function registerPJEDownloadModule(fastify: FastifyInstance) {
   const repository = new PJEDownloadRepositoryMemory();
   const service = new PJEDownloadService(repository);
 
-  // Iniciar worker que processa jobs em background
   const worker = new PJEDownloadWorker(service, repository);
   worker.start();
 
   await fastify.register(pjeDownloadRoutes(service), {
     prefix: '/api/pje/downloads',
+  });
+
+  const advogadosService = new PjeAdvogadosService();
+  await fastify.register(pjeAdvogadosRoutes(advogadosService), {
+    prefix: '/api/pje/advogados',
   });
 
   const cleanupInterval = setInterval(() => {
@@ -30,6 +30,4 @@ export async function registerPJEDownloadModule(fastify: FastifyInstance) {
     clearInterval(cleanupInterval);
     worker.stop();
   });
-
-  fastify.log.info('✅ Módulo PJE Download registrado em /api/pje/downloads (storage: memory, worker: ativo)');
 }
