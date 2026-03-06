@@ -40,14 +40,9 @@ export async function gerarPlanilhaAdvogados(params: GerarPlanilhaParams) {
 
 export async function obterProgressoAdvogados(jobId: string) {
   return request<{
-    jobId: string;
-    status: string;
-    progress: number;
-    totalProcesses: number;
-    processedCount: number;
-    currentProcess?: string;
-    message: string;
-    timestamp: number;
+    jobId: string; status: string; progress: number;
+    totalProcesses: number; processedCount: number;
+    currentProcess?: string; message: string; timestamp: number;
   }>(`/api/pje/advogados/${jobId}/progress`);
 }
 

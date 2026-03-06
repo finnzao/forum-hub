@@ -1,48 +1,23 @@
-// ============================================================
-// apps/web/src/app/componentes/pje-download/types.ts
-// Tipos compartilhados para os componentes PJE Download
-//
-// Correções v8:
-//  - ParametrosDownload.isFavorite agora é boolean explícito
-//  - Adicionado documentação sobre o significado de isFavorite
-// ============================================================
-
-// ── Status e tipos de job ─────────────────────────────────
-
-export type PJEJobStatus =
-  | 'pending'
-  | 'authenticating'
-  | 'awaiting_2fa'
-  | 'selecting_profile'
-  | 'processing'
-  | 'downloading'
-  | 'checking_integrity'
-  | 'retrying'
-  | 'completed'
-  | 'partial'
-  | 'failed'
-  | 'cancelled';
+// Single source of truth: tipos, constantes e helpers do módulo PJE Download
 
 export type EtapaWizard = 'login' | '2fa' | 'perfil' | 'download' | 'historico';
+export type PJEDownloadMode = 'by_number' | 'by_task' | 'by_tag';
 
-// ── Sessão PJE ────────────────────────────────────────────
+export type PJEJobStatus =
+  | 'pending' | 'authenticating' | 'awaiting_2fa'
+  | 'selecting_profile' | 'processing' | 'downloading'
+  | 'checking_integrity' | 'retrying'
+  | 'completed' | 'partial' | 'failed' | 'cancelled';
 
-export interface SessaoPJE {
-  autenticado: boolean;
-  sessionId?: string;
-  usuario?: {
-    idUsuario: number;
-    nomeUsuario: string;
-    login: string;
-    perfil: string;
-    nomePerfil: string;
-    idUsuarioLocalizacaoMagistradoServidor: number;
-  };
-  perfis?: PerfilPJE[];
-  perfilSelecionado?: PerfilPJE;
-  tarefas?: Array<{ id: number; nome: string; quantidadePendente: number }>;
-  tarefasFavoritas?: Array<{ id: number; nome: string; quantidadePendente: number }>;
-  etiquetas?: Array<{ id: number; nomeTag: string; nomeTagCompleto: string; favorita: boolean }>;
+// ── Interfaces ───────────────────────────────────────────
+
+export interface UsuarioPJE {
+  idUsuario: number;
+  nomeUsuario: string;
+  login: string;
+  perfil: string;
+  nomePerfil: string;
+  idUsuarioLocalizacaoMagistradoServidor: number;
 }
 
 export interface PerfilPJE {
@@ -52,51 +27,40 @@ export interface PerfilPJE {
   favorito: boolean;
 }
 
-// ── Parâmetros de Download ────────────────────────────────
-
-export interface ParametrosDownload {
-  mode: 'by_task' | 'by_tag' | 'by_number';
-
-  // Modo by_task
-  taskName?: string;
-  /**
-   * isFavorite indica qual lista de tarefas usar:
-   *  - false (padrão): "Todas as Tarefas" — lista completa sem filtro
-   *  - true: "Minhas Tarefas" — apenas tarefas marcadas com estrela (favoritas)
-   *
-   * Ambas as listas podem ter tarefas com o mesmo nome, mas o endpoint
-   * do PJE retorna processos diferentes dependendo deste flag.
-   */
-  isFavorite?: boolean;
-
-  // Modo by_tag
-  tagId?: number;
-  tagName?: string;
-
-  // Modo by_number
-  processNumbers?: string[];
-
-  // Outros
-  documentType?: number;
-  pjeProfileIndex?: number;
+export interface TarefaPJE {
+  id: number;
+  nome: string;
+  quantidadePendente: number;
 }
 
-// ── Resposta do Job ───────────────────────────────────────
+export interface EtiquetaPJE {
+  id: number;
+  nomeTag: string;
+  nomeTagCompleto: string;
+  favorita: boolean;
+}
 
-export interface DownloadJobResponse {
-  id: string;
-  userId: number;
-  mode: 'by_task' | 'by_tag' | 'by_number';
-  status: PJEJobStatus;
-  progress: number;
-  totalProcesses: number;
-  successCount: number;
-  failureCount: number;
-  files: PJEDownloadedFile[];
-  errors: PJEDownloadError[];
-  createdAt: string;
-  startedAt?: string;
-  completedAt?: string;
+export interface SessaoPJE {
+  autenticado: boolean;
+  sessionId?: string;
+  usuario?: UsuarioPJE;
+  perfis?: PerfilPJE[];
+  perfilSelecionado?: PerfilPJE;
+  tarefas?: TarefaPJE[];
+  tarefasFavoritas?: TarefaPJE[];
+  etiquetas?: EtiquetaPJE[];
+}
+
+export interface ParametrosDownload {
+  mode: PJEDownloadMode;
+  taskName?: string;
+  /** true = "Minhas Tarefas" (favoritas), false = "Todas as Tarefas" */
+  isFavorite?: boolean;
+  tagId?: number;
+  tagName?: string;
+  processNumbers?: string[];
+  documentType?: number;
+  pjeProfileIndex?: number;
 }
 
 export interface PJEDownloadedFile {
@@ -114,7 +78,21 @@ export interface PJEDownloadError {
   timestamp: string;
 }
 
-// ── Progresso ─────────────────────────────────────────────
+export interface DownloadJobResponse {
+  id: string;
+  userId: number;
+  mode: PJEDownloadMode;
+  status: PJEJobStatus;
+  progress: number;
+  totalProcesses: number;
+  successCount: number;
+  failureCount: number;
+  files: PJEDownloadedFile[];
+  errors: PJEDownloadError[];
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
 
 export interface PJEDownloadProgress {
   jobId: string;
@@ -130,8 +108,6 @@ export interface PJEDownloadProgress {
   timestamp: number;
 }
 
-// ── Logs ──────────────────────────────────────────────────
-
 export interface EntradaLog {
   id: number;
   timestamp: string;
@@ -141,15 +117,51 @@ export interface EntradaLog {
   dados?: unknown;
 }
 
-// ── Helpers ───────────────────────────────────────────────
+// ── Constantes ───────────────────────────────────────────
+
+interface StatusConfig { label: string; color: string; bg: string }
+
+export const STATUS_CONFIG: Record<PJEJobStatus, StatusConfig> = {
+  pending:            { label: 'Na fila',              color: 'text-slate-600',   bg: 'bg-slate-100' },
+  authenticating:     { label: 'Autenticando',         color: 'text-blue-700',    bg: 'bg-blue-50' },
+  awaiting_2fa:       { label: 'Aguardando 2FA',       color: 'text-amber-700',   bg: 'bg-amber-50' },
+  selecting_profile:  { label: 'Selecionando perfil',  color: 'text-blue-700',    bg: 'bg-blue-50' },
+  processing:         { label: 'Processando',          color: 'text-blue-700',    bg: 'bg-blue-50' },
+  downloading:        { label: 'Baixando',             color: 'text-indigo-700',  bg: 'bg-indigo-50' },
+  checking_integrity: { label: 'Verificando',          color: 'text-purple-700',  bg: 'bg-purple-50' },
+  retrying:           { label: 'Retentando',           color: 'text-orange-700',  bg: 'bg-orange-50' },
+  completed:          { label: 'Concluído',            color: 'text-emerald-700', bg: 'bg-emerald-50' },
+  failed:             { label: 'Falhou',               color: 'text-red-700',     bg: 'bg-red-50' },
+  cancelled:          { label: 'Cancelado',            color: 'text-slate-500',   bg: 'bg-slate-100' },
+  partial:            { label: 'Parcial',              color: 'text-amber-700',   bg: 'bg-amber-50' },
+};
+
+export const MODE_CONFIG: Record<PJEDownloadMode, { label: string; description: string }> = {
+  by_task:   { label: 'Por Tarefa',   description: 'Baixar processos de uma tarefa' },
+  by_tag:    { label: 'Por Etiqueta', description: 'Baixar por etiqueta/marcador' },
+  by_number: { label: 'Por Número',   description: 'Informar números CNJ' },
+};
+
+const ACTIVE_STATUSES: PJEJobStatus[] = [
+  'pending', 'authenticating', 'awaiting_2fa', 'selecting_profile',
+  'processing', 'downloading', 'checking_integrity', 'retrying',
+];
+
+// ── Helpers ──────────────────────────────────────────────
 
 export function isJobActive(status: PJEJobStatus): boolean {
-  const activeStatuses: PJEJobStatus[] = [
-    'pending', 'authenticating', 'awaiting_2fa',
-    'selecting_profile', 'processing', 'downloading',
-    'checking_integrity', 'retrying',
-  ];
-  return activeStatuses.includes(status);
+  return ACTIVE_STATUSES.includes(status);
+}
+
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Safe string accessor — retorna '' se valor for null/undefined */
+export function safeStr(val: string | undefined | null): string {
+  return val ?? '';
 }
 
 export const logger = {
@@ -158,7 +170,7 @@ export const logger = {
   warn: (modulo: string, msg: string, dados?: unknown) =>
     console.warn(`[${modulo}] ${msg}`, dados ?? ''),
   error: (modulo: string, msg: string, dados?: unknown) =>
-    console.log(`[${modulo}] ${msg}`, dados ?? ''),
+    console.error(`[${modulo}] ${msg}`, dados ?? ''),
   success: (modulo: string, msg: string, dados?: unknown) =>
     console.log(`[${modulo}] ✓ ${msg}`, dados ?? ''),
 };

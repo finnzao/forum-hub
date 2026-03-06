@@ -6,16 +6,10 @@ export { CardJob } from './CardJob';
 export { PainelLogs } from './PainelLogs';
 
 export type {
-  EtapaWizard,
-  SessaoPJE,
-  PerfilPJE,
-  ParametrosDownload,
-  DownloadJobResponse,
-  PJEDownloadProgress,
-  PJEDownloadedFile,
-  PJEDownloadError,
-  PJEJobStatus,
-  EntradaLog,
+  EtapaWizard, SessaoPJE, PerfilPJE, UsuarioPJE,
+  ParametrosDownload, DownloadJobResponse, PJEDownloadProgress,
+  PJEDownloadedFile, PJEDownloadError, PJEJobStatus, EntradaLog,
+  TarefaPJE, EtiquetaPJE,
 } from './types';
 
 export { isJobActive, logger } from './types';
