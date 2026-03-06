@@ -17,21 +17,30 @@ export function pjeAdvogadosRoutes(service: PjeAdvogadosService) {
     fastify.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userHeader = request.headers['x-user'] as string;
-        if (!userHeader)
-          return reply.status(401).send({ success: false, error: { code: 'UNAUTHORIZED', message: 'Header x-user não encontrado.', statusCode: 401 } });
 
-        let user: AuthenticatedUser;
-        try { user = JSON.parse(userHeader); } catch {
-          return reply.status(401).send({ success: false, error: { code: 'INVALID_AUTH', message: 'Header x-user inválido.', statusCode: 401 } });
+        if (userHeader) {
+          let user: AuthenticatedUser;
+          try { user = JSON.parse(userHeader); } catch {
+            return reply.status(401).send({ success: false, error: { code: 'INVALID_AUTH', message: 'Header x-user inválido.', statusCode: 401 } });
+          }
+
+          if (!user.id || !user.name || !user.role)
+            return reply.status(401).send({ success: false, error: { code: 'INVALID_AUTH', message: 'Header x-user incompleto.', statusCode: 401 } });
+
+          if (user.role !== 'magistrado')
+            return reply.status(403).send({ success: false, error: { code: 'FORBIDDEN', message: 'Acesso restrito a magistrados.', statusCode: 403 } });
+
+          (request as any).user = user;
+          return;
         }
 
-        if (!user.id || !user.name || !user.role)
-          return reply.status(401).send({ success: false, error: { code: 'INVALID_AUTH', message: 'Header x-user incompleto.', statusCode: 401 } });
+        if (process.env.NODE_ENV !== 'production') {
+          (request as any).user = { id: 1, name: 'Dev User', role: 'magistrado' } as AuthenticatedUser;
+          request.log.warn('[ADVOGADOS] Header x-user ausente — usando usuário padrão (dev mode)');
+          return;
+        }
 
-        if (user.role !== 'magistrado')
-          return reply.status(403).send({ success: false, error: { code: 'FORBIDDEN', message: 'Acesso restrito a magistrados.', statusCode: 403 } });
-
-        (request as any).user = user;
+        return reply.status(401).send({ success: false, error: { code: 'UNAUTHORIZED', message: 'Header x-user não encontrado.', statusCode: 401 } });
       } catch (err) {
         request.log.error({ err }, 'Erro no middleware');
         return reply.status(500).send({ success: false, error: { code: 'AUTH_ERROR', message: 'Erro interno.', statusCode: 500 } });
@@ -80,7 +89,12 @@ export function pjeAdvogadosRoutes(service: PjeAdvogadosService) {
       }
 
       const downloadsDir = path.join(process.cwd(), 'downloads', 'planilhas');
-      const files = fs.readdirSync(downloadsDir).filter((f) => f.includes(request.params.jobId.slice(0, 8)) || true);
+
+      if (!fs.existsSync(downloadsDir)) {
+        return reply.status(404).send({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'Diretório de planilhas não encontrado.', statusCode: 404 } });
+      }
+
+      const files = fs.readdirSync(downloadsDir).filter((f) => f.endsWith('.xlsx') || f.endsWith('.csv'));
       const sorted = files.sort((a, b) => {
         const sa = fs.statSync(path.join(downloadsDir, a));
         const sb = fs.statSync(path.join(downloadsDir, b));
@@ -91,10 +105,18 @@ export function pjeAdvogadosRoutes(service: PjeAdvogadosService) {
         return reply.status(404).send({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'Arquivo não encontrado.', statusCode: 404 } });
       }
 
-      const filePath = path.join(downloadsDir, sorted[0]);
+      const fileName = sorted[0];
+      const filePath = path.join(downloadsDir, fileName);
       const stream = fs.createReadStream(filePath);
-      reply.header('Content-Type', 'text/csv; charset=utf-8');
-      reply.header('Content-Disposition', `attachment; filename="${sorted[0]}"`);
+
+      // Content-Type dinâmico baseado na extensão
+      const isXlsx = fileName.endsWith('.xlsx');
+      const contentType = isXlsx
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'text/csv; charset=utf-8';
+
+      reply.header('Content-Type', contentType);
+      reply.header('Content-Disposition', `attachment; filename="${fileName}"`);
       return reply.send(stream);
     });
   };

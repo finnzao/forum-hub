@@ -16,14 +16,11 @@ async function main() {
     },
   });
 
-  // ── CORS ─────────────────────────────────────────────────
+  // ── CORS — aberto para desenvolvimento ───────────────────
   await fastify.register(cors, {
-    origin: [
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      process.env.FRONTEND_URL || '',
-    ].filter(Boolean),
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    origin: true, // aceita qualquer origem
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user', 'X-User'],
     credentials: true,
   });
 

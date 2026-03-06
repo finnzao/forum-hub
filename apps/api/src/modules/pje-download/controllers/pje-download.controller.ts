@@ -17,21 +17,31 @@ export function pjeDownloadRoutes(service: PJEDownloadService) {
       if (request.url.includes('/auth/')) return;
       try {
         const userHeader = request.headers['x-user'] as string;
-        if (!userHeader)
-          return reply.status(401).send({ success: false, error: { code: 'UNAUTHORIZED', message: 'Header x-user não encontrado.', statusCode: 401 } });
 
-        let user: AuthenticatedUser;
-        try { user = JSON.parse(userHeader); } catch {
-          return reply.status(401).send({ success: false, error: { code: 'INVALID_AUTH', message: 'Header x-user inválido.', statusCode: 401 } });
+        if (userHeader) {
+          let user: AuthenticatedUser;
+          try { user = JSON.parse(userHeader); } catch {
+            return reply.status(401).send({ success: false, error: { code: 'INVALID_AUTH', message: 'Header x-user inválido.', statusCode: 401 } });
+          }
+
+          if (!user.id || !user.name || !user.role)
+            return reply.status(401).send({ success: false, error: { code: 'INVALID_AUTH', message: 'Header x-user incompleto.', statusCode: 401 } });
+
+          if (user.role !== 'magistrado')
+            return reply.status(403).send({ success: false, error: { code: 'FORBIDDEN', message: 'Acesso restrito a magistrados.', statusCode: 403 } });
+
+          (request as any).user = user;
+          return;
         }
 
-        if (!user.id || !user.name || !user.role)
-          return reply.status(401).send({ success: false, error: { code: 'INVALID_AUTH', message: 'Header x-user incompleto.', statusCode: 401 } });
+        // Em desenvolvimento: permite requisições sem x-user
+        if (process.env.NODE_ENV !== 'production') {
+          (request as any).user = { id: 1, name: 'Dev User', role: 'magistrado' } as AuthenticatedUser;
+          request.log.warn('[PJE-DOWNLOAD] Header x-user ausente — usando usuário padrão (dev mode)');
+          return;
+        }
 
-        if (user.role !== 'magistrado')
-          return reply.status(403).send({ success: false, error: { code: 'FORBIDDEN', message: 'Acesso restrito a magistrados.', statusCode: 403 } });
-
-        (request as any).user = user;
+        return reply.status(401).send({ success: false, error: { code: 'UNAUTHORIZED', message: 'Header x-user não encontrado.', statusCode: 401 } });
       } catch (err) {
         request.log.error({ err }, 'Erro no middleware');
         return reply.status(500).send({ success: false, error: { code: 'AUTH_ERROR', message: 'Erro interno.', statusCode: 500 } });
