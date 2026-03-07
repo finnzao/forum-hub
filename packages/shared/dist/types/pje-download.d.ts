@@ -3,18 +3,13 @@ export interface PJEDownloadJobPayload {
     jobId: string;
     userId: number;
     requestedBy: string;
-    /** Credenciais transitórias — descartadas após login */
     credentials?: PJECredentials;
     mode: PJEDownloadMode;
-    /** Modo by_number */
     processNumbers?: string[];
-    /** Modo by_task */
     taskName?: string;
     isFavorite?: boolean;
-    /** Modo by_tag */
     tagId?: number;
     tagName?: string;
-    /** Opções gerais */
     documentType?: number;
     downloadDir?: string;
     maxWaitTime?: number;
