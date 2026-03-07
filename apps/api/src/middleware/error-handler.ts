@@ -1,8 +1,3 @@
-// ============================================================
-// apps/api/src/middleware/error-handler.ts
-// Error handler global — padroniza todas as respostas de erro
-// ============================================================
-
 import type { FastifyError, FastifyRequest, FastifyReply } from 'fastify';
 
 interface ErrorResponse {

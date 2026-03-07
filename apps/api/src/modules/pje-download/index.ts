@@ -1,30 +1,25 @@
 import type { FastifyInstance } from 'fastify';
-import { PJEDownloadRepositoryMemory } from './repositories/pje-download.repository.memory';
+import { MemoryDownloadRepository } from './repositories/download.repository.memory';
 import { PJEDownloadService } from './services/pje-download.service';
-import { pjeDownloadRoutes } from './controllers/pje-download.controller';
 import { PJEDownloadWorker } from './services/pje-download-worker';
 import { PjeAdvogadosService } from './services/pje-advogados/index';
-import { pjeAdvogadosRoutes } from './controllers/pje-advogados.controller';
+import { authRoutes } from './controllers/auth.controller';
+import { jobsRoutes } from './controllers/jobs.controller';
+import { advogadosRoutes } from './controllers/advogados.controller';
 
 export async function registerPJEDownloadModule(fastify: FastifyInstance) {
-  const repository = new PJEDownloadRepositoryMemory();
+  const repository = new MemoryDownloadRepository();
   const service = new PJEDownloadService(repository);
-
   const worker = new PJEDownloadWorker(service, repository);
   worker.start();
 
-  await fastify.register(pjeDownloadRoutes(service), {
-    prefix: '/api/pje/downloads',
-  });
+  await fastify.register(authRoutes, { prefix: '/api/pje/downloads/auth' });
+  await fastify.register(jobsRoutes(service), { prefix: '/api/pje/downloads' });
 
   const advogadosService = new PjeAdvogadosService();
-  await fastify.register(pjeAdvogadosRoutes(advogadosService), {
-    prefix: '/api/pje/advogados',
-  });
+  await fastify.register(advogadosRoutes(advogadosService), { prefix: '/api/pje/advogados' });
 
-  const cleanupInterval = setInterval(() => {
-    service.cleanup();
-  }, 10 * 60 * 1000);
+  const cleanupInterval = setInterval(() => service.cleanup(), 10 * 60 * 1000);
 
   fastify.addHook('onClose', () => {
     clearInterval(cleanupInterval);

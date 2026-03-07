@@ -1,15 +1,5 @@
-// ============================================================
-// Repositório IN-MEMORY — substitui o PostgreSQL
-// Os dados vivem apenas enquanto o servidor está rodando.
-// ============================================================
-
-import type {
-  PJEDownloadMode,
-  PJEJobStatus,
-  PJEDownloadedFile,
-  PJEDownloadError,
-  DownloadJobResponse,
-} from 'shared';
+import type { PJEDownloadMode, PJEJobStatus, PJEDownloadedFile, PJEDownloadError, DownloadJobResponse } from 'shared';
+import type { IDownloadRepository, CreateJobParams, UpdateJobParams } from './download.repository';
 
 interface StoredJob {
   id: string;
@@ -29,46 +19,22 @@ interface StoredJob {
   completedAt?: Date;
 }
 
-interface CreateJobParams {
-  id: string;
-  userId: number;
-  mode: PJEDownloadMode;
-  params: Record<string, unknown>;
-}
+const ACTIVE_STATUSES: PJEJobStatus[] = [
+  'pending', 'authenticating', 'awaiting_2fa', 'selecting_profile',
+  'processing', 'downloading', 'checking_integrity', 'retrying',
+];
 
-interface UpdateJobParams {
-  id: string;
-  status?: PJEJobStatus;
-  progress?: number;
-  totalProcesses?: number;
-  successCount?: number;
-  failureCount?: number;
-  files?: PJEDownloadedFile[];
-  errors?: PJEDownloadError[];
-  startedAt?: Date;
-  completedAt?: Date;
-}
-
-export class PJEDownloadRepositoryMemory {
+export class MemoryDownloadRepository implements IDownloadRepository {
   private jobs = new Map<string, StoredJob>();
-  private audit = new Map<string, any[]>();
+  private audit = new Map<string, unknown[]>();
 
   async createJob(params: CreateJobParams): Promise<DownloadJobResponse> {
     const now = new Date();
     const job: StoredJob = {
-      id: params.id,
-      userId: params.userId,
-      mode: params.mode,
-      params: params.params,
-      status: 'pending',
-      progress: 0,
-      totalProcesses: 0,
-      successCount: 0,
-      failureCount: 0,
-      files: [],
-      errors: [],
-      createdAt: now,
-      updatedAt: now,
+      id: params.id, userId: params.userId, mode: params.mode as PJEDownloadMode,
+      params: params.params, status: 'pending', progress: 0, totalProcesses: 0,
+      successCount: 0, failureCount: 0, files: [], errors: [],
+      createdAt: now, updatedAt: now,
     };
     this.jobs.set(params.id, job);
     return this.toResponse(job);
@@ -79,25 +45,16 @@ export class PJEDownloadRepositoryMemory {
     return job ? this.toResponse(job) : null;
   }
 
-  async findJobsByUser(
-    userId: number,
-    limit = 20,
-    offset = 0
-  ): Promise<{ jobs: DownloadJobResponse[]; total: number }> {
+  async findJobsByUser(userId: number, limit = 20, offset = 0): Promise<{ jobs: DownloadJobResponse[]; total: number }> {
     const userJobs = [...this.jobs.values()]
       .filter((j) => j.userId === userId)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-
-    return {
-      jobs: userJobs.slice(offset, offset + limit).map((j) => this.toResponse(j)),
-      total: userJobs.length,
-    };
+    return { jobs: userJobs.slice(offset, offset + limit).map((j) => this.toResponse(j)), total: userJobs.length };
   }
 
   async updateJob(params: UpdateJobParams): Promise<void> {
     const job = this.jobs.get(params.id);
     if (!job) return;
-
     if (params.status !== undefined) job.status = params.status;
     if (params.progress !== undefined) job.progress = params.progress;
     if (params.totalProcesses !== undefined) job.totalProcesses = params.totalProcesses;
@@ -111,35 +68,31 @@ export class PJEDownloadRepositoryMemory {
   }
 
   async countActiveJobsByUser(userId: number): Promise<number> {
-    const activeStatuses: PJEJobStatus[] = [
-      'pending', 'authenticating', 'awaiting_2fa',
-      'selecting_profile', 'processing', 'downloading',
-      'checking_integrity', 'retrying',
-    ];
-    return [...this.jobs.values()].filter(
-      (j) => j.userId === userId && activeStatuses.includes(j.status)
-    ).length;
+    return [...this.jobs.values()].filter((j) => j.userId === userId && ACTIVE_STATUSES.includes(j.status)).length;
   }
 
-  async findAuditByJob(jobId: string) {
+  async findAuditByJob(jobId: string): Promise<unknown[]> {
     return this.audit.get(jobId) ?? [];
+  }
+
+  getStats() {
+    const jobs = [...this.jobs.values()];
+    return {
+      totalJobs: jobs.length,
+      byStatus: jobs.reduce((acc, j) => { acc[j.status] = (acc[j.status] || 0) + 1; return acc; }, {} as Record<string, number>),
+    };
   }
 
   private toResponse(job: StoredJob): DownloadJobResponse {
     return {
-      id: job.id,
-      userId: job.userId,
-      mode: job.mode,
-      status: job.status,
-      progress: job.progress,
-      totalProcesses: job.totalProcesses,
-      successCount: job.successCount,
-      failureCount: job.failureCount,
-      files: job.files,
-      errors: job.errors,
+      id: job.id, userId: job.userId, mode: job.mode, status: job.status,
+      progress: job.progress, totalProcesses: job.totalProcesses,
+      successCount: job.successCount, failureCount: job.failureCount,
+      files: job.files, errors: job.errors,
       createdAt: job.createdAt.toISOString(),
       startedAt: job.startedAt?.toISOString(),
       completedAt: job.completedAt?.toISOString(),
-    };
+      params: job.params,
+    } as DownloadJobResponse & { params: Record<string, unknown> };
   }
 }

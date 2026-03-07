@@ -16,18 +16,15 @@ async function main() {
     },
   });
 
-  // ── CORS — aberto para desenvolvimento ───────────────────
   await fastify.register(cors, {
-    origin: true, // aceita qualquer origem
+    origin: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-user', 'X-User'],
     credentials: true,
   });
 
-  // ── Error handler global ─────────────────────────────────
   fastify.setErrorHandler(errorHandler);
 
-  // ── Health check ─────────────────────────────────────────
   fastify.get('/api/health', async () => ({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -35,15 +32,13 @@ async function main() {
     storage: 'memory',
   }));
 
-  // ── Módulo PJE Download (sem Redis, sem PostgreSQL) ──────
   await registerPJEDownloadModule(fastify);
 
-  // ── Start ────────────────────────────────────────────────
   await fastify.listen({ port: PORT, host: '0.0.0.0' });
-  fastify.log.info(`🚀 API rodando na porta ${PORT} (storage: memory, redis: desabilitado)`);
+  fastify.log.info(`API rodando na porta ${PORT} (storage: memory)`);
 }
 
 main().catch((err) => {
-  console.error('💥 Erro fatal ao iniciar API:', err);
+  console.error('Erro fatal ao iniciar API:', err);
   process.exit(1);
 });
