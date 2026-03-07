@@ -50,16 +50,14 @@ export function advogadosRoutes(service: PjeAdvogadosService) {
       if (!fs.existsSync(downloadsDir))
         return reply.status(404).send({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'Diretório não encontrado.', statusCode: 404 } });
 
-      const files = fs.readdirSync(downloadsDir).filter((f) => f.endsWith('.xlsx') || f.endsWith('.csv'));
-      const sorted = files.sort((a, b) => fs.statSync(path.join(downloadsDir, b)).mtimeMs - fs.statSync(path.join(downloadsDir, a)).mtimeMs);
+      const filesList = fs.readdirSync(downloadsDir).filter((f) => f.endsWith('.xlsx') || f.endsWith('.csv'));
+      const sorted = filesList.sort((a, b) => fs.statSync(path.join(downloadsDir, b)).mtimeMs - fs.statSync(path.join(downloadsDir, a)).mtimeMs);
       if (sorted.length === 0)
         return reply.status(404).send({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'Arquivo não encontrado.', statusCode: 404 } });
 
       const fileName = sorted[0];
       const filePath = path.join(downloadsDir, fileName);
-      const contentType = fileName.endsWith('.xlsx')
-        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        : 'text/csv; charset=utf-8';
+      const contentType = fileName.endsWith('.xlsx') ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv; charset=utf-8';
 
       reply.header('Content-Type', contentType);
       reply.header('Content-Disposition', `attachment; filename="${fileName}"`);

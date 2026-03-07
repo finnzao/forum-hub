@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { PJEAuthProxy } from '../services/pje-auth-proxy.service';
+import { PJEAuthProxy } from '../services/auth/pje-auth-proxy.service';
 import { ok } from '../../../shared/response';
 
 export async function authRoutes(fastify: FastifyInstance) {

@@ -8,7 +8,7 @@ import {
   type PJEJobStatus,
 } from 'shared';
 import type { IDownloadRepository } from '../repositories/download.repository';
-import { AppError } from '../../../shared/response';
+import { AppError } from '../../../shared/errors';
 
 export class PJEDownloadService {
   private twoFaCodes = new Map<string, { code: string; expiresAt: number }>();
@@ -124,6 +124,4 @@ export class PJEDownloadService {
   }
 }
 
-// Re-export for backward compatibility
-export { AppError as PJEDownloadError } from '../../../shared/response';
 export type { IDownloadRepository as IPJEDownloadRepository } from '../repositories/download.repository';

@@ -1,18 +1,8 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { AppError } from './errors';
 
 export function ok<T>(reply: FastifyReply, data: T, statusCode = 200): void {
   reply.status(statusCode).send({ success: true, data, timestamp: new Date().toISOString() });
-}
-
-export class AppError extends Error {
-  constructor(
-    public code: string,
-    message: string,
-    public statusCode = 400,
-  ) {
-    super(message);
-    this.name = 'AppError';
-  }
 }
 
 export function handleServiceError(err: unknown, request: FastifyRequest, reply: FastifyReply) {
@@ -31,3 +21,5 @@ export function handleServiceError(err: unknown, request: FastifyRequest, reply:
     error: { code: 'INTERNAL_ERROR', message: 'Erro interno.', statusCode: 500, timestamp: new Date().toISOString() },
   });
 }
+
+export { AppError };
