@@ -42,6 +42,8 @@ export class PjeAdvogadosService {
       emit({ jobId, status: 'extracting', progress: 10, totalProcesses: processos.length, processedCount: 0, message: `Extraindo advogados de ${processos.length} processos...`, timestamp: Date.now() });
 
       const resultados: ProcessoAdvogados[] = [];
+      let totalAdvogados = 0;
+
       for (let i = 0; i < processos.length; i++) {
         if (this.isCancelled(jobId)) break;
         const proc = processos[i];
@@ -49,7 +51,15 @@ export class PjeAdvogadosService {
         emit({ jobId, status: 'extracting', progress: pct, totalProcesses: processos.length, processedCount: i, currentProcess: proc.numeroProcesso, message: `Extraindo ${i + 1}/${processos.length}: ${proc.numeroProcesso}`, timestamp: Date.now() });
 
         try {
-          resultados.push(await this.extractAdvogados(session, proc));
+          const resultado = await this.extractAdvogados(session, proc);
+          resultados.push(resultado);
+          const count = resultado.advogadosPoloAtivo.length + resultado.advogadosPoloPassivo.length;
+          totalAdvogados += count;
+
+          // Log de progresso a cada 10 processos ou se for o primeiro
+          if (i === 0 || (i + 1) % 10 === 0) {
+            console.log(`[ADVOGADOS] Progresso: ${i + 1}/${processos.length} | advogados encontrados até agora: ${totalAdvogados}`);
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Erro desconhecido';
           errors.push({ processo: proc.numeroProcesso, message: msg });
@@ -60,13 +70,22 @@ export class PjeAdvogadosService {
 
       if (this.isCancelled(jobId)) return this.cancelledResult(jobId, processos.length, errors);
 
-      const filtered = this.applyFilter(resultados, dto.filtro);
+      console.log(`[ADVOGADOS] Extração completa: ${processos.length} processos, ${totalAdvogados} advogados total, ${errors.length} erros`);
+
       emit({ jobId, status: 'generating', progress: 90, totalProcesses: processos.length, processedCount: processos.length, message: 'Gerando planilha...', timestamp: Date.now() });
 
-      const { fileName, filePath } = await gerarXlsx(filtered, dto.filtro);
-      emit({ jobId, status: 'completed', progress: 100, totalProcesses: processos.length, processedCount: processos.length, message: `Planilha gerada: ${filtered.length} processos.`, timestamp: Date.now() });
+      // Passa TODOS os resultados ao gerador — ele cria duas sheets quando há filtro:
+      // "Geral" com todos os processos + sheet filtrada com o nome do filtro
+      const { fileName, filePath } = await gerarXlsx(resultados, dto.filtro);
 
-      return { jobId, totalProcesses: processos.length, processedCount: resultados.length, filteredCount: filtered.length, fileName, filePath, errors };
+      // Calcula contagem de filtrados para o retorno
+      const filteredCount = dto.filtro?.valor?.trim()
+        ? this.applyFilter(resultados, dto.filtro).length
+        : resultados.length;
+
+      emit({ jobId, status: 'completed', progress: 100, totalProcesses: processos.length, processedCount: processos.length, message: `Planilha gerada: ${resultados.length} processos${dto.filtro?.valor ? ` (${filteredCount} filtrados)` : ''}, ${totalAdvogados} advogados.`, timestamp: Date.now() });
+
+      return { jobId, totalProcesses: processos.length, processedCount: resultados.length, filteredCount, fileName, filePath, errors };
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Erro ao gerar planilha';
       emit({ jobId, status: 'failed', progress: 0, totalProcesses: 0, processedCount: 0, message: msg, timestamp: Date.now() });
@@ -127,23 +146,79 @@ export class PjeAdvogadosService {
   }
 
   private async extractAdvogados(session: PjeSession, proc: ProcessoAdvogados): Promise<ProcessoAdvogados> {
+    // 1. Gerar chave de acesso
     const caRaw = await pjeApiGet<string>(session, `painelUsuario/gerarChaveAcessoProcesso/${proc.idProcesso}`);
     const ca = (typeof caRaw === 'string' ? caRaw : '').replace(/^"|"$/g, '');
-    if (!ca || ca.length < 10) throw new Error('Chave de acesso inválida');
+    if (!ca || ca.length < 10) throw new Error(`Chave de acesso inválida (${ca?.length || 0} chars)`);
 
+    // 2. Acessar página de autos digitais
     const url = `${PJE_BASE}/pje/Processo/ConsultaProcesso/Detalhe/listAutosDigitais.seam?idProcesso=${proc.idProcesso}&ca=${ca}&aba=`;
+    const cookieStr = serializePjeCookies(session.cookies);
+
     const res = await fetch(url, {
       method: 'GET',
       headers: {
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         Referer: `${PJE_BASE}/pje/Processo/ConsultaProcesso/listView.seam`,
-        Cookie: serializePjeCookies(session.cookies),
+        Cookie: cookieStr,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },
       redirect: 'follow',
     });
 
-    const { advogadosPoloAtivo, advogadosPoloPassivo } = extractAdvogadosFromHtml(await res.text());
+    // 3. Validar resposta
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status} ao acessar autos de ${proc.numeroProcesso}`);
+    }
+
+    const html = await res.text();
+
+    // Diagnóstico: detecta respostas inválidas
+    if (html.length < 500) {
+      console.warn(`[ADVOGADOS] ⚠️ ${proc.numeroProcesso}: HTML muito curto (${html.length} chars)`);
+      console.warn(`[ADVOGADOS]   URL: ${url}`);
+      console.warn(`[ADVOGADOS]   Resposta (primeiros 500 chars): ${html.substring(0, 500)}`);
+      throw new Error(`Página de autos retornou HTML muito curto (${html.length} chars)`);
+    }
+
+    // Detecta redirect para login (sessão expirada)
+    if ((html.includes('login.seam') || html.includes('kc-form-login')) && !html.includes('poloAtivo')) {
+      console.error(`[ADVOGADOS] ⚠️ ${proc.numeroProcesso}: Sessão expirada — retornou página de login`);
+      throw new Error('Sessão PJE expirada durante extração');
+    }
+
+    // Detecta se não é a página de autos digitais
+    if (!html.includes('poloAtivo') && !html.includes('ADVOGADO') && !html.includes('listAutosDigitais')) {
+      console.warn(`[ADVOGADOS] ⚠️ ${proc.numeroProcesso}: HTML não parece ser página de autos digitais`);
+      console.warn(`[ADVOGADOS]   URL final: ${res.url}`);
+      console.warn(`[ADVOGADOS]   HTML (primeiros 1000 chars): ${html.substring(0, 1000)}`);
+    }
+
+    // 4. Extrair advogados
+    const { advogadosPoloAtivo, advogadosPoloPassivo, debug } = extractAdvogadosFromHtml(html);
+
+    // Log detalhado para o primeiro processo (ajuda no debug)
+    if (debug) {
+      const isEmpty = advogadosPoloAtivo.length === 0 && advogadosPoloPassivo.length === 0;
+      if (isEmpty) {
+        console.warn(`[ADVOGADOS] ⚠️ ${proc.numeroProcesso}: Nenhum advogado encontrado`);
+        console.warn(`[ADVOGADOS]   Debug: ${JSON.stringify(debug)}`);
+        // Loga trecho do HTML ao redor de "ADVOGADO" se existir
+        const advIdx = html.indexOf('ADVOGADO');
+        if (advIdx >= 0) {
+          const start = Math.max(0, advIdx - 200);
+          const end = Math.min(html.length, advIdx + 300);
+          console.warn(`[ADVOGADOS]   HTML ao redor de "ADVOGADO" (pos ${advIdx}): ...${html.substring(start, end)}...`);
+        }
+        const pctAdvIdx = html.indexOf('%28ADVOGADO%29');
+        if (pctAdvIdx >= 0) {
+          const start = Math.max(0, pctAdvIdx - 200);
+          const end = Math.min(html.length, pctAdvIdx + 300);
+          console.warn(`[ADVOGADOS]   HTML ao redor de "%%28ADVOGADO%%29" (pos ${pctAdvIdx}): ...${html.substring(start, end)}...`);
+        }
+      }
+    }
+
     return { ...proc, advogadosPoloAtivo, advogadosPoloPassivo };
   }
 

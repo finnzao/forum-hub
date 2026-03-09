@@ -108,5 +108,15 @@ export class CookieJar {
     return count;
   }
 
+  /**
+   * Limpa cookies de um domínio específico, preservando cookies de outros domínios.
+   */
+  clearDomain(domain: string): void {
+    const deleted = this.jar.delete(domain);
+    if (deleted) {
+      console.log(`[PJE-AUTH] Cookies do domínio ${domain} limpos`);
+    }
+  }
+
   clear(): void { this.jar.clear(); }
 }

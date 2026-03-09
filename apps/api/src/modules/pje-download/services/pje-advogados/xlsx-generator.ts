@@ -28,9 +28,16 @@ const COLORS = {
   text:     '1A1A1A',
   okGreen:  '548235',
   errRed:   'C00000',
+  filterHeaderBg: '2E75B6',
+  filterHeaderFg: 'FFFFFF',
+  filterEvenRow:  'DAEEF3',
+  summaryBg: 'FFF2CC',
+  summaryBorder: 'FFD966',
 } as const;
 
 const STATUS_COL = COLUMNS.length;
+
+// ─── Helpers de estilo ──────────────────────────────────────────────
 
 function makeBorder(color: string): Partial<ExcelJS.Borders> {
   const side: ExcelJS.Border = { style: 'thin', color: { argb: color } };
@@ -50,6 +57,8 @@ const CENTER_WRAP: Partial<ExcelJS.Alignment> = {
   vertical: 'middle',
   wrapText: true,
 };
+
+// ─── Conversão de processo para row ─────────────────────────────────
 
 function processoToRow(p: ProcessoAdvogados): string[] {
   return [
@@ -73,8 +82,123 @@ function calcRowHeight(values: string[]): number {
 }
 
 function sanitize(s: string): string {
-  return s.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 30);
+  return s.replace(/[^a-zA-Z0-9À-ÿ ]/g, '_').replace(/_+/g, '_').trim().slice(0, 28);
 }
+
+// ─── Criação de uma sheet com dados ─────────────────────────────────
+
+function populateSheet(
+  ws: ExcelJS.Worksheet,
+  processos: ProcessoAdvogados[],
+  headerBg: string,
+  headerFg: string,
+  evenRowBg: string,
+): void {
+  // Configura colunas
+  ws.columns = COLUMNS.map((col, i) => ({
+    header: col.header,
+    key: `col${i}`,
+    width: col.width,
+  }));
+
+  // Estiliza cabeçalho
+  const headerRow = ws.getRow(1);
+  headerRow.height = 28;
+  headerRow.eachCell((cell) => {
+    cell.font = makeFont({ size: 10, bold: true, color: { argb: headerFg } });
+    cell.fill = makeFill(headerBg);
+    cell.alignment = CENTER_WRAP;
+    cell.border = makeBorder(headerBg);
+  });
+
+  // Adiciona dados
+  for (let i = 0; i < processos.length; i++) {
+    const values = processoToRow(processos[i]);
+    const row = ws.addRow(values);
+    const bgColor = i % 2 === 0 ? evenRowBg : COLORS.oddRow;
+    const status = values[values.length - 1];
+
+    row.height = calcRowHeight(values);
+
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      cell.font = colNumber === STATUS_COL
+        ? makeFont({ bold: true, color: { argb: status === 'OK' ? COLORS.okGreen : COLORS.errRed } })
+        : makeFont();
+      cell.fill = makeFill(bgColor);
+      cell.alignment = CENTER_WRAP;
+      cell.border = makeBorder(COLORS.border);
+    });
+  }
+
+  // Filtros automáticos
+  if (processos.length > 0) {
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: processos.length + 1, column: COLUMNS.length },
+    };
+  }
+}
+
+// ─── Adiciona resumo na sheet filtrada ──────────────────────────────
+
+function addFilterSummary(
+  ws: ExcelJS.Worksheet,
+  filtro: FiltroAdvogado,
+  totalGeral: number,
+  totalFiltrado: number,
+): void {
+  // Pula uma linha após os dados
+  const lastDataRow = ws.rowCount;
+  const summaryStartRow = lastDataRow + 2;
+
+  // Linha de resumo
+  const summaryTexts = [
+    `Filtro aplicado: ${filtro.tipo === 'nome' ? 'Nome' : 'OAB'} contém "${filtro.valor}"`,
+    `Processos encontrados: ${totalFiltrado} de ${totalGeral} (${totalGeral > 0 ? Math.round((totalFiltrado / totalGeral) * 100) : 0}%)`,
+    `Gerado em: ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`,
+  ];
+
+  for (let i = 0; i < summaryTexts.length; i++) {
+    const row = ws.getRow(summaryStartRow + i);
+    const cell = row.getCell(1);
+    cell.value = summaryTexts[i];
+    cell.font = makeFont({ size: 9, bold: i < 2, italic: i === 2, color: { argb: '4A4A4A' } });
+    cell.fill = makeFill(COLORS.summaryBg);
+    cell.border = makeBorder(COLORS.summaryBorder);
+    cell.alignment = { horizontal: 'left', vertical: 'middle' };
+
+    // Mescla as colunas para o texto de resumo
+    ws.mergeCells(summaryStartRow + i, 1, summaryStartRow + i, 5);
+  }
+}
+
+// ─── Aplica filtro nos processos ────────────────────────────────────
+
+function applyFilter(processos: ProcessoAdvogados[], filtro: FiltroAdvogado): ProcessoAdvogados[] {
+  const termo = filtro.valor.trim().toUpperCase();
+  if (!termo) return processos;
+
+  return processos.filter((p) => {
+    const all = [...p.advogadosPoloAtivo, ...p.advogadosPoloPassivo];
+    return all.some((adv) =>
+      filtro.tipo === 'oab'
+        ? adv.oab?.toUpperCase().includes(termo) ?? false
+        : adv.nome.toUpperCase().includes(termo),
+    );
+  });
+}
+
+// ─── Gera o nome da sheet filtrada ──────────────────────────────────
+
+function buildFilterSheetName(filtro: FiltroAdvogado): string {
+  const prefix = filtro.tipo === 'oab' ? 'OAB' : 'Nome';
+  const value = sanitize(filtro.valor);
+  // Sheet names no Excel têm limite de 31 caracteres
+  const name = `${prefix} - ${value}`;
+  return name.slice(0, 31);
+}
+
+// ─── Função principal ───────────────────────────────────────────────
 
 export async function gerarXlsx(
   processos: ProcessoAdvogados[],
@@ -91,47 +215,38 @@ export async function gerarXlsx(
   wb.creator = 'PJE Download — TJBA';
   wb.created = new Date();
 
-  const ws = wb.addWorksheet('Advogados', {
-    views: [{ state: 'frozen', ySplit: 1 }],
-  });
+  const hasFiltro = !!filtro?.valor?.trim();
 
-  ws.columns = COLUMNS.map((col, i) => ({
-    header: col.header,
-    key: `col${i}`,
-    width: col.width,
-  }));
+  if (hasFiltro) {
+    // ── COM FILTRO: duas sheets ──────────────────────────────────
 
-  const headerRow = ws.getRow(1);
-  headerRow.height = 28;
-  headerRow.eachCell((cell) => {
-    cell.font = makeFont({ size: 10, bold: true, color: { argb: COLORS.headerFg } });
-    cell.fill = makeFill(COLORS.headerBg);
-    cell.alignment = CENTER_WRAP;
-    cell.border = makeBorder(COLORS.headerBg);
-  });
+    const filteredProcessos = applyFilter(processos, filtro!);
 
-  for (let i = 0; i < processos.length; i++) {
-    const values = processoToRow(processos[i]);
-    const row = ws.addRow(values);
-    const bgColor = i % 2 === 0 ? COLORS.evenRow : COLORS.oddRow;
-    const status = values[values.length - 1];
-
-    row.height = calcRowHeight(values);
-
-    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      cell.font = colNumber === STATUS_COL
-        ? makeFont({ bold: true, color: { argb: status === 'OK' ? COLORS.okGreen : COLORS.errRed } })
-        : makeFont();
-      cell.fill = makeFill(bgColor);
-      cell.alignment = CENTER_WRAP;
-      cell.border = makeBorder(COLORS.border);
+    // Sheet 1: "Geral" com todos os processos
+    const wsGeral = wb.addWorksheet('Geral', {
+      views: [{ state: 'frozen', ySplit: 1 }],
     });
-  }
+    populateSheet(wsGeral, processos, COLORS.headerBg, COLORS.headerFg, COLORS.evenRow);
 
-  ws.autoFilter = {
-    from: { row: 1, column: 1 },
-    to: { row: processos.length + 1, column: COLUMNS.length },
-  };
+    // Sheet 2: nome baseado no filtro, com processos filtrados
+    const filterSheetName = buildFilterSheetName(filtro!);
+    const wsFiltro = wb.addWorksheet(filterSheetName, {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    populateSheet(wsFiltro, filteredProcessos, COLORS.filterHeaderBg, COLORS.filterHeaderFg, COLORS.filterEvenRow);
+    addFilterSummary(wsFiltro, filtro!, processos.length, filteredProcessos.length);
+
+    console.log(`[XLSX] Gerado com 2 sheets: "Geral" (${processos.length}) + "${filterSheetName}" (${filteredProcessos.length})`);
+  } else {
+    // ── SEM FILTRO: sheet única ──────────────────────────────────
+
+    const ws = wb.addWorksheet('Advogados', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    populateSheet(ws, processos, COLORS.headerBg, COLORS.headerFg, COLORS.evenRow);
+
+    console.log(`[XLSX] Gerado com 1 sheet: "Advogados" (${processos.length})`);
+  }
 
   await wb.xlsx.writeFile(filePath);
 

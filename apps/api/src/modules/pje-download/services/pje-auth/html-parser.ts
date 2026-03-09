@@ -12,7 +12,7 @@ const HTML_ENTITY_MAP: Record<string, string> = {
   '&atild;': 'ã',  '&otild;': 'õ',  '&ntilde;': 'ñ',
   '&auml;': 'ä', '&euml;': 'ë', '&iuml;': 'ï', '&ouml;': 'ö', '&uuml;': 'ü',
   '&aring;': 'å', '&aelig;': 'æ', '&szlig;': 'ß',
-  '&ordf;': 'ª', '&ordm;': 'º', 
+  '&ordf;': 'ª', '&ordm;': 'º',   // ← CRÍTICO: "11ª VARA", "1º"
   // Maiúsculas
   '&Ccedil;': 'Ç', '&Atilde;': 'Ã', '&Otilde;': 'Õ',
   '&Aacute;': 'Á', '&Eacute;': 'É', '&Iacute;': 'Í', '&Oacute;': 'Ó', '&Uacute;': 'Ú',
@@ -150,6 +150,13 @@ export function extractFormFields(html: string, baseUrl: string): FormFieldsResu
 
 /**
  * Detecta se a página retornada pelo SSO é um formulário de 2FA.
+ *
+ * FIX: Diferencia o formulário de login (username/password) do formulário de 2FA.
+ * Quando o SSO re-exibe o formulário de login (por race condition ou sessão
+ * transitória), isso NÃO deve ser tratado como 2FA.
+ *
+ * Também removidos termos genéricos demais ('digit', 'código') que causavam
+ * falsos positivos em páginas em português.
  */
 export function detect2FA(html: string, url: string): boolean {
   const lower = html.toLowerCase();

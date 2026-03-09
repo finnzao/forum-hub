@@ -20,7 +20,7 @@ import type { PJELoginResult, PJEProfileResult, PJEUserInfo } from './types';
 /** Número máximo de retries quando o SSO re-exibe o formulário de login */
 const MAX_LOGIN_RETRIES = 2;
 /** Delay entre retries (ms) para dar tempo ao SSO estabilizar a sessão */
-const LOGIN_RETRY_DELAY = 1500;
+const LOGIN_RETRY_DELAY = 2000;
 
 export class PJEAuthProxy {
   private cookieJar = new CookieJar();
@@ -45,16 +45,16 @@ export class PJEAuthProxy {
   /**
    * Executa login completo com retry automático.
    *
-   * Quando o SSO re-exibe o formulário de login (race condition / sessão
-   * transitória), tenta novamente até MAX_LOGIN_RETRIES vezes antes de
-   * declarar erro ou 2FA.
+   * Quando o SSO re-exibe o formulário de login (race condition no ALB / sessão
+   * transitória no PJE), tenta novamente até MAX_LOGIN_RETRIES vezes.
+   
    */
   private async performFreshLogin(cpf: string, password: string): Promise<PJELoginResult> {
     for (let attempt = 0; attempt <= MAX_LOGIN_RETRIES; attempt++) {
       if (attempt > 0) {
         console.log(`[PJE-AUTH] Retry ${attempt}/${MAX_LOGIN_RETRIES}: SSO re-exibiu formulário de login, tentando novamente...`);
-        // Limpa cookie jar para começar sessão limpa
-        this.cookieJar.clear();
+        // Limpa APENAS os cookies do PJE, preserva os do SSO (AWSALB sticky session)
+        this.cookieJar.clearDomain('pje.tjba.jus.br');
         await this.sleep(LOGIN_RETRY_DELAY);
       }
 
@@ -62,6 +62,12 @@ export class PJEAuthProxy {
       console.log(`[PJE-AUTH] Step 1: GET ${PJE_BASE}/pje/login.seam${attempt > 0 ? ` (tentativa ${attempt + 1})` : ''}`);
       const ssoPage = await this.http.followRedirects('GET', `${PJE_BASE}/pje/login.seam`);
       console.log(`[PJE-AUTH] Step 1 done: finalUrl=${ssoPage.finalUrl} (${ssoPage.body.length} chars)`);
+
+      // Se no retry o SSO já reconhece a sessão e redireciona direto para o PJE
+      if (attempt > 0 && isLoggedInUrl(ssoPage.finalUrl)) {
+        console.log(`[PJE-AUTH] Retry ${attempt}: SSO redirecionou direto para PJE (sessão reconhecida)`);
+        return await this.handleLoginResult(ssoPage);
+      }
 
       // Fase 2: POST credenciais
       const loginResult = await this.submitCredentials(ssoPage, cpf, password);
@@ -222,12 +228,10 @@ export class PJEAuthProxy {
 
     console.log(`[PJE-AUTH] Navegando para página ${targetPage} via scroller: ${scrollerInfo.scrollerId}`);
 
-    // POST Ajax de paginação conforme doc seção 8.2
-    // formId aqui é "papeisUsuarioForm:j_id72" (confirmado via HAR)
     const body = new URLSearchParams({
       'AJAXREQUEST': '_viewRoot',
-      [scrollerInfo.formId]: scrollerInfo.formId,   // "papeisUsuarioForm:j_id72"
-      [scrollerInfo.scrollerId]: String(targetPage), // "papeisUsuarioForm:j_id72:scPerfil" = "2"
+      [scrollerInfo.formId]: scrollerInfo.formId,
+      [scrollerInfo.scrollerId]: String(targetPage),
       'ajaxSingle': scrollerInfo.scrollerId,
       'javax.faces.ViewState': currentViewState,
     });
@@ -272,7 +276,6 @@ export class PJEAuthProxy {
       viewState = nav.viewState;
 
       const pageProfiles = extractProfilesFromHtml(html);
-      // Adiciona apenas perfis não duplicados
       for (const p of pageProfiles) {
         if (!allProfiles.find(x => x.indice === p.indice)) allProfiles.push(p);
       }
@@ -280,7 +283,6 @@ export class PJEAuthProxy {
 
     console.log(`[PJE-AUTH] ${allProfiles.length} perfis disponíveis`, JSON.stringify(allProfiles, null, 2));
 
-    // Atualiza stored com a sessão após navegação
     stored.cookies = this.cookieJar.exportAll();
     sessionStore.set(sessionId, stored);
 
@@ -295,7 +297,7 @@ export class PJEAuthProxy {
     return `<!-- URL: ${r.finalUrl} -->\n${r.body}`;
   }
 
-  //métodos privados
+  // ─── Métodos privados ──────────────────────────────────────────
 
   private async tryReusePersistedSession(cpf: string): Promise<PJELoginResult | null> {
     const persisted = getPersistedSession(cpf);
@@ -332,7 +334,6 @@ export class PJEAuthProxy {
       user: this.mapUser(user),
     });
 
-    // Busca TODOS os perfis (todas as páginas)
     const profileResult = await this.getAllProfiles(sid);
     return {
       needs2FA: false,
@@ -378,7 +379,6 @@ export class PJEAuthProxy {
     }
 
     // Voltou para form SSO = credenciais inválidas
-    // (Nota: isLoginFormReappearing já é tratado em performFreshLogin antes de chegar aqui, mas mantemos esta verificação como fallback para fluxos que chamam handleLoginResult diretamente)
     if (result.finalUrl.includes('sso.cloud.pje.jus.br/auth/realms')) {
       const errorMsg = extractLoginError(result.body);
       if (errorMsg) return { needs2FA: false, error: errorMsg };
@@ -419,7 +419,6 @@ export class PJEAuthProxy {
     });
     this.persistSession(user);
 
-    // Busca TODOS os perfis (todas as páginas)
     const profileResult = await this.getAllProfiles(sid);
 
     return {
@@ -430,7 +429,6 @@ export class PJEAuthProxy {
     };
   }
 
-  // POST de seleção conforme doc seção 9.3 (confirmado via HAR)
   private async executeProfileSelection(html: string, viewState: string, profileIndex: number): Promise<void> {
     let elementId: string;
 
@@ -440,7 +438,6 @@ export class PJEAuthProxy {
       elementId = `papeisUsuarioForm:dtPerfil:${profileIndex}:j_id70`;
     }
 
-    // VERIFICAÇÃO: element_id deve existir no HTML
     if (!html.includes(elementId)) {
       console.warn(`[PJE-AUTH] element_id "${elementId}" não encontrado no HTML`);
       const altId = `papeisUsuarioForm:dtPerfil:${profileIndex}:j_id68`;
