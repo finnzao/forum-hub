@@ -12,7 +12,7 @@ const HTML_ENTITY_MAP: Record<string, string> = {
   '&atild;': 'ã',  '&otild;': 'õ',  '&ntilde;': 'ñ',
   '&auml;': 'ä', '&euml;': 'ë', '&iuml;': 'ï', '&ouml;': 'ö', '&uuml;': 'ü',
   '&aring;': 'å', '&aelig;': 'æ', '&szlig;': 'ß',
-  '&ordf;': 'ª', '&ordm;': 'º',   // ← CRÍTICO: "11ª VARA", "1º"
+  '&ordf;': 'ª', '&ordm;': 'º', 
   // Maiúsculas
   '&Ccedil;': 'Ç', '&Atilde;': 'Ã', '&Otilde;': 'Õ',
   '&Aacute;': 'Á', '&Eacute;': 'É', '&Iacute;': 'Í', '&Oacute;': 'Ó', '&Uacute;': 'Ú',
@@ -148,15 +148,69 @@ export function extractFormFields(html: string, baseUrl: string): FormFieldsResu
   return { actionUrl, fields };
 }
 
-// Detecção de 2FA: URL contém authenticate E body tem padrões OTP
+/**
+ * Detecta se a página retornada pelo SSO é um formulário de 2FA.
+ */
 export function detect2FA(html: string, url: string): boolean {
   const lower = html.toLowerCase();
-  const bodyHas2FA = ['codigo enviado', 'digit', 'código', 'verification code', 'otp', 'two-factor', 'totp']
-    .some(p => lower.includes(p));
-  const urlHas2FA = url.includes('otp') || url.includes('totp');
+
   // Só detecta se URL ainda está no SSO (não voltou para pje.tjba.jus.br)
   const stillInSSO = url.includes('sso.cloud.pje.jus.br');
-  return (bodyHas2FA || urlHas2FA) && stillInSSO;
+  if (!stillInSSO) return false;
+
+  // Se o formulário de login (username/password) está presente, NÃO é 2FA.
+  // É o SSO pedindo credenciais novamente (sessão não se estabeleceu).
+  const hasLoginForm = lower.includes('kc-form-login') &&
+    (lower.includes('name="username"') || lower.includes('name="password"'));
+  if (hasLoginForm) {
+    console.log('[PJE-AUTH] detect2FA: formulário de login detectado (username/password presente) — NÃO é 2FA');
+    return false;
+  }
+
+  // Padrões específicos de 2FA (removidos 'digit' e 'código' por serem genéricos demais)
+  const specific2FAPatterns = [
+    'codigo enviado',       // mensagem explícita de código enviado
+    'verification code',    // inglês
+    'otp',                  // one-time password
+    'two-factor',           // inglês
+    'totp',                 // time-based OTP
+    'authenticator',        // app autenticador
+    'token de acesso',      // PJE específico
+    'informe o código',     // instrução de 2FA
+    'enviamos um código',   // instrução de 2FA
+    'código de verificação', // específico o suficiente
+  ];
+
+  const bodyHas2FA = specific2FAPatterns.some(p => lower.includes(p));
+  const urlHas2FA = url.includes('otp') || url.includes('totp');
+
+  // Verificação adicional: se a página tem um campo de input para código
+  // mas NÃO tem campos username/password, é provavelmente 2FA
+  const hasCodeInput = lower.includes('name="code"') ||
+    lower.includes('name="otp"') ||
+    lower.includes('name="totp"') ||
+    lower.includes('id="code"') ||
+    lower.includes('id="otp"');
+
+  const is2FA = bodyHas2FA || urlHas2FA || hasCodeInput;
+
+  if (is2FA) {
+    console.log(`[PJE-AUTH] detect2FA: 2FA detectado (bodyHas2FA=${bodyHas2FA}, urlHas2FA=${urlHas2FA}, hasCodeInput=${hasCodeInput})`);
+  }
+
+  return is2FA;
+}
+
+/**
+ * Verifica se a página do SSO é apenas o formulário de login re-exibido
+ * (não é 2FA, não é erro — apenas o SSO pedindo credenciais novamente).
+ */
+export function isLoginFormReappearing(html: string, url: string): boolean {
+  if (!url.includes('sso.cloud.pje.jus.br')) return false;
+  const lower = html.toLowerCase();
+  return (lower.includes('kc-form-login') || lower.includes('name="username"')) &&
+    lower.includes('name="password"') &&
+    !detect2FA(html, url);
 }
 
 export function extractLoginError(html: string): string | null {

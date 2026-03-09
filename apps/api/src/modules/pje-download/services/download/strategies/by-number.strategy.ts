@@ -1,5 +1,5 @@
 import type { DownloadStrategy, ProcessoInfo } from './download-strategy';
-import type { PjeSession } from '../../../../shared/pje-api-client';
+import type { PjeSession } from '../../../../../shared/pje-api-client';
 
 export class ByNumberStrategy implements DownloadStrategy {
   async listProcesses(

@@ -1,6 +1,6 @@
 import type { DownloadStrategy, ProcessoInfo } from './download-strategy';
-import type { PjeSession } from '../../../../shared/pje-api-client';
-import { pjeApiPost } from '../../../../shared/pje-api-client';
+import type { PjeSession } from '../../../../../shared/pje-api-client';
+import { pjeApiPost } from '../../../../../shared/pje-api-client';
 
 const PAGE_SIZE = 500;
 const MAX_TOTAL = 10000;

@@ -1,4 +1,4 @@
-import type { PjeSession } from '../../../../shared/pje-api-client';
+import type { PjeSession } from '../../../../../shared/pje-api-client';
 
 export interface ProcessoInfo {
   idProcesso: number;

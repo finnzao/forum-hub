@@ -12,9 +12,15 @@ import {
 import {
   extractFormFields, extractViewState,
   detect2FA, extractLoginError, isLoggedInUrl, isProfileSelectionPage,
+  isLoginFormReappearing,
 } from './html-parser';
 import { PJE_BASE } from './constants';
 import type { PJELoginResult, PJEProfileResult, PJEUserInfo } from './types';
+
+/** Número máximo de retries quando o SSO re-exibe o formulário de login */
+const MAX_LOGIN_RETRIES = 2;
+/** Delay entre retries (ms) para dar tempo ao SSO estabilizar a sessão */
+const LOGIN_RETRY_DELAY = 1500;
 
 export class PJEAuthProxy {
   private cookieJar = new CookieJar();
@@ -29,8 +35,31 @@ export class PJEAuthProxy {
       const reused = await this.tryReusePersistedSession(cpf);
       if (reused) return reused;
 
+      return await this.performFreshLogin(cpf, password);
+    } catch (err) {
+      console.error(`[PJE-AUTH] Exception:`, err);
+      return { needs2FA: false, error: err instanceof Error ? err.message : 'Erro desconhecido' };
+    }
+  }
+
+  /**
+   * Executa login completo com retry automático.
+   *
+   * Quando o SSO re-exibe o formulário de login (race condition / sessão
+   * transitória), tenta novamente até MAX_LOGIN_RETRIES vezes antes de
+   * declarar erro ou 2FA.
+   */
+  private async performFreshLogin(cpf: string, password: string): Promise<PJELoginResult> {
+    for (let attempt = 0; attempt <= MAX_LOGIN_RETRIES; attempt++) {
+      if (attempt > 0) {
+        console.log(`[PJE-AUTH] Retry ${attempt}/${MAX_LOGIN_RETRIES}: SSO re-exibiu formulário de login, tentando novamente...`);
+        // Limpa cookie jar para começar sessão limpa
+        this.cookieJar.clear();
+        await this.sleep(LOGIN_RETRY_DELAY);
+      }
+
       // Fase 1: GET login.seam → redireciona para SSO
-      console.log(`[PJE-AUTH] Step 1: GET ${PJE_BASE}/pje/login.seam`);
+      console.log(`[PJE-AUTH] Step 1: GET ${PJE_BASE}/pje/login.seam${attempt > 0 ? ` (tentativa ${attempt + 1})` : ''}`);
       const ssoPage = await this.http.followRedirects('GET', `${PJE_BASE}/pje/login.seam`);
       console.log(`[PJE-AUTH] Step 1 done: finalUrl=${ssoPage.finalUrl} (${ssoPage.body.length} chars)`);
 
@@ -38,11 +67,32 @@ export class PJEAuthProxy {
       const loginResult = await this.submitCredentials(ssoPage, cpf, password);
       if (!loginResult) return { needs2FA: false, error: 'Formulário SSO não encontrado.' };
 
+      // Verifica se o SSO re-exibiu o formulário de login (não é 2FA, não é erro)
+      if (isLoginFormReappearing(loginResult.body, loginResult.finalUrl)) {
+        // Verifica se há mensagem de erro explícita (credenciais inválidas)
+        const errorMsg = extractLoginError(loginResult.body);
+        if (errorMsg) {
+          console.log(`[PJE-AUTH] SSO retornou erro explícito: ${errorMsg}`);
+          return { needs2FA: false, error: errorMsg };
+        }
+
+        // Sem erro explícito = sessão transitória, pode tentar novamente
+        if (attempt < MAX_LOGIN_RETRIES) {
+          console.log(`[PJE-AUTH] SSO re-exibiu formulário de login sem erro — sessão transitória detectada`);
+          continue; // retry
+        }
+
+        // Esgotou retries
+        console.error(`[PJE-AUTH] SSO re-exibiu formulário de login após ${MAX_LOGIN_RETRIES + 1} tentativas`);
+        return { needs2FA: false, error: 'Falha no login após múltiplas tentativas. O SSO pode estar instável.' };
+      }
+
+      // Não é re-exibição do login — processa resultado normalmente
       return await this.handleLoginResult(loginResult);
-    } catch (err) {
-      console.error(`[PJE-AUTH] Exception:`, err);
-      return { needs2FA: false, error: err instanceof Error ? err.message : 'Erro desconhecido' };
     }
+
+    // Fallback (não deve chegar aqui)
+    return { needs2FA: false, error: 'Falha inesperada no login.' };
   }
 
   async submit2FA(sessionId: string, code: string): Promise<PJELoginResult> {
@@ -245,7 +295,7 @@ export class PJEAuthProxy {
     return `<!-- URL: ${r.finalUrl} -->\n${r.body}`;
   }
 
-  // ─── Métodos privados ──────────────────────────────────────────
+  //métodos privados
 
   private async tryReusePersistedSession(cpf: string): Promise<PJELoginResult | null> {
     const persisted = getPersistedSession(cpf);
@@ -328,6 +378,7 @@ export class PJEAuthProxy {
     }
 
     // Voltou para form SSO = credenciais inválidas
+    // (Nota: isLoginFormReappearing já é tratado em performFreshLogin antes de chegar aqui, mas mantemos esta verificação como fallback para fluxos que chamam handleLoginResult diretamente)
     if (result.finalUrl.includes('sso.cloud.pje.jus.br/auth/realms')) {
       const errorMsg = extractLoginError(result.body);
       if (errorMsg) return { needs2FA: false, error: errorMsg };
@@ -481,6 +532,10 @@ export class PJEAuthProxy {
       nomePerfil: raw.nomePerfil || raw.perfil || '',
       idUsuarioLocalizacaoMagistradoServidor: raw.idUsuarioLocalizacaoMagistradoServidor,
     };
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 

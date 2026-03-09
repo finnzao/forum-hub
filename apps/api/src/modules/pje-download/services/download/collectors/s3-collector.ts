@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PJEDownloadedFile } from 'shared';
-import { serializePjeCookies, serializeAllCookies, buildPjeHeaders, PJE_REST_BASE } from '../../../../shared/pje-api-client';
+import { serializePjeCookies, serializeAllCookies, buildPjeHeaders, PJE_REST_BASE } from '../../../../../shared/pje-api-client';
 
 interface StoredSession {
   cookies: Record<string, string>;

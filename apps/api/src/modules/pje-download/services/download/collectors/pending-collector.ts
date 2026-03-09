@@ -1,5 +1,5 @@
 import type { PJEDownloadedFile } from 'shared';
-import { serializePjeCookies, serializeAllCookies, buildPjeHeaders, PJE_REST_BASE } from '../../../../shared/pje-api-client';
+import { serializePjeCookies, serializeAllCookies, buildPjeHeaders, PJE_REST_BASE } from '../../../../../shared/pje-api-client';
 import { S3Collector } from './s3-collector';
 
 const DOWNLOAD_AVAILABLE_STATUSES = ['S', 'DISPONIVEL', 'AVAILABLE'];
