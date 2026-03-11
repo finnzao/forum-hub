@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export interface SaveResult {
   fileName: string;
   size: number;
@@ -72,7 +73,7 @@ export class FileSystemManager {
     }
 
     try {
-      this.dirHandle = await (window as   ).showDirectoryPicker({
+      this.dirHandle = await (window as any).showDirectoryPicker({
         mode: 'readwrite',
         startIn: 'downloads',
       });

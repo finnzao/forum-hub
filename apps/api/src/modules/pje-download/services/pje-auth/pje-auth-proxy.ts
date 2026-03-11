@@ -18,9 +18,9 @@ import { PJE_BASE } from './constants';
 import type { PJELoginResult, PJEProfileResult, PJEUserInfo } from './types';
 
 /** Número máximo de retries quando o SSO re-exibe o formulário de login */
-const MAX_LOGIN_RETRIES = 2;
+const MAX_LOGIN_RETRIES = 3;
 /** Delay entre retries (ms) para dar tempo ao SSO estabilizar a sessão */
-const LOGIN_RETRY_DELAY = 2000;
+const LOGIN_RETRY_DELAY = 3000;
 
 export class PJEAuthProxy {
   private cookieJar = new CookieJar();
@@ -44,17 +44,13 @@ export class PJEAuthProxy {
 
   /**
    * Executa login completo com retry automático.
-   *
-   * Quando o SSO re-exibe o formulário de login (race condition no ALB / sessão
-   * transitória no PJE), tenta novamente até MAX_LOGIN_RETRIES vezes.
-   
    */
   private async performFreshLogin(cpf: string, password: string): Promise<PJELoginResult> {
     for (let attempt = 0; attempt <= MAX_LOGIN_RETRIES; attempt++) {
       if (attempt > 0) {
         console.log(`[PJE-AUTH] Retry ${attempt}/${MAX_LOGIN_RETRIES}: SSO re-exibiu formulário de login, tentando novamente...`);
-        // Limpa APENAS os cookies do PJE, preserva os do SSO (AWSALB sticky session)
-        this.cookieJar.clearDomain('pje.tjba.jus.br');
+        this.cookieJar.clear();
+        console.log(`[PJE-AUTH] Todos os cookies limpos para retry limpo`);
         await this.sleep(LOGIN_RETRY_DELAY);
       }
 
@@ -63,41 +59,41 @@ export class PJEAuthProxy {
       const ssoPage = await this.http.followRedirects('GET', `${PJE_BASE}/pje/login.seam`);
       console.log(`[PJE-AUTH] Step 1 done: finalUrl=${ssoPage.finalUrl} (${ssoPage.body.length} chars)`);
 
-      // Se no retry o SSO já reconhece a sessão e redireciona direto para o PJE
+      // If on retry the SSO already recognizes the session and redirects to PJE
       if (attempt > 0 && isLoggedInUrl(ssoPage.finalUrl)) {
         console.log(`[PJE-AUTH] Retry ${attempt}: SSO redirecionou direto para PJE (sessão reconhecida)`);
         return await this.handleLoginResult(ssoPage);
       }
 
+      const pjeCookiesBeforeSSO = this.cookieJar.snapshotDomain('pje.tjba.jus.br');
+      console.log(`[PJE-AUTH] Cookies PJE salvos antes do POST SSO: ${Object.keys(pjeCookiesBeforeSSO).join(', ')}`);
+
       // Fase 2: POST credenciais
       const loginResult = await this.submitCredentials(ssoPage, cpf, password);
       if (!loginResult) return { needs2FA: false, error: 'Formulário SSO não encontrado.' };
 
-      // Verifica se o SSO re-exibiu o formulário de login (não é 2FA, não é erro)
       if (isLoginFormReappearing(loginResult.body, loginResult.finalUrl)) {
-        // Verifica se há mensagem de erro explícita (credenciais inválidas)
+
         const errorMsg = extractLoginError(loginResult.body);
         if (errorMsg) {
           console.log(`[PJE-AUTH] SSO retornou erro explícito: ${errorMsg}`);
           return { needs2FA: false, error: errorMsg };
         }
 
-        // Sem erro explícito = sessão transitória, pode tentar novamente
+        // No explicit error = transient session issue
         if (attempt < MAX_LOGIN_RETRIES) {
           console.log(`[PJE-AUTH] SSO re-exibiu formulário de login sem erro — sessão transitória detectada`);
-          continue; // retry
+          continue; 
         }
 
-        // Esgotou retries
         console.error(`[PJE-AUTH] SSO re-exibiu formulário de login após ${MAX_LOGIN_RETRIES + 1} tentativas`);
-        return { needs2FA: false, error: 'Falha no login após múltiplas tentativas. O SSO pode estar instável.' };
+        return { needs2FA: false, error: 'Falha no login após múltiplas tentativas. O SSO pode estar instável. Tente novamente em alguns minutos.' };
       }
 
-      // Não é re-exibição do login — processa resultado normalmente
+
       return await this.handleLoginResult(loginResult);
     }
 
-    // Fallback (não deve chegar aqui)
     return { needs2FA: false, error: 'Falha inesperada no login.' };
   }
 

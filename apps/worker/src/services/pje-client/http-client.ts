@@ -1,8 +1,3 @@
-// ============================================================
-// apps/worker/src/services/pje-client/http-client.ts
-// HTTP Client — gerencia cookies, sessão e requisições ao PJE
-// ============================================================
-
 import { config } from '../../config';
 
 export interface PJESession {
