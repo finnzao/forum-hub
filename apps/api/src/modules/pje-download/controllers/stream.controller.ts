@@ -6,14 +6,27 @@ import {
   serializeCookies, serializeAllCookies, buildPjeHeaders,
   PJE_REST_BASE, PJE_FRONTEND_ORIGIN, PJE_LEGACY_APP,
 } from '../../../shared/pje-api-client';
+import { ParallelPool } from '../../../shared/parallel-pool';
+
+// ── Configuração ────────────────────────────────────────────
+
+/** Slots paralelos de download (requisições simultâneas ao PJE por stream) */
+const PARALLEL_SLOTS = 3;
+
+/** Delay mínimo entre a EMISSÃO de requisições ao PJE (evita rate-limit) */
+const REQUEST_STAGGER_MS = 500;
+
+/** Controle de streams ativas por usuário e global */
+const MAX_STREAMS_PER_USER = 1;
+const MAX_STREAMS_GLOBAL = 5;
+
+const activeStreams = new Map<string, { count: number; startedAt: number }>();
+
+// ── Helpers ─────────────────────────────────────────────────
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
-
-const activeStreams = new Map<string, { count: number; startedAt: number }>();
-const MAX_STREAMS_PER_USER = 1;
-const MAX_STREAMS_GLOBAL = 5;
 
 async function validatePjeSession(session: any): Promise<boolean> {
   try {
@@ -41,6 +54,163 @@ async function validatePjeSession(session: any): Promise<boolean> {
   }
 }
 
+function releaseStream(userId: string): void {
+  const entry = activeStreams.get(userId);
+  if (entry) {
+    entry.count--;
+    if (entry.count <= 0) activeStreams.delete(userId);
+  }
+}
+
+// ── Tipos internos ──────────────────────────────────────────
+
+interface StreamContext {
+  extractor: UrlExtractor;
+  send: (event: string, data: unknown) => void;
+  cancelled: () => boolean;
+}
+
+interface BatchResult {
+  processNumber: string;
+  type: 'success' | 'queued' | 'error';
+  url?: string;
+  proxyUrl?: string;
+  fileSize?: number;
+  error?: string;
+}
+
+// ── Processamento paralelo de um processo ────────────────────
+
+async function processOneProcess(
+  ctx: StreamContext,
+  proc: { idProcesso: number; numeroProcesso: string; idTaskInstance?: number },
+  index: number,
+  total: number,
+): Promise<BatchResult> {
+  const { extractor, send, cancelled } = ctx;
+
+  if (cancelled()) {
+    return { processNumber: proc.numeroProcesso, type: 'error', error: 'Cancelado' };
+  }
+
+  send('progress', {
+    index: index + 1,
+    total,
+    processNumber: proc.numeroProcesso,
+    status: 'requesting',
+  });
+
+  try {
+    const result = await extractor.extractDownloadUrl(proc);
+
+    console.log(
+      `[STREAM] [${index + 1}/${total}] ${proc.numeroProcesso} → ${result.type}`
+      + `${result.url ? ' (URL OK)' : ''}${result.error ? ` (${result.error})` : ''}`,
+    );
+
+    if (result.type === 'direct' && result.url) {
+      const proxyToken = registerProxyUrl(result.url);
+      const proxyUrl = `/api/pje/downloads/proxy/${proxyToken}`;
+
+      send('url', {
+        processNumber: proc.numeroProcesso,
+        downloadUrl: result.url,
+        proxyUrl,
+        fileName: `${proc.numeroProcesso}.pdf`,
+        fileSize: result.fileSize,
+        method: 'direct',
+      });
+
+      return {
+        processNumber: proc.numeroProcesso,
+        type: 'success',
+        url: result.url,
+        proxyUrl,
+        fileSize: result.fileSize,
+      };
+    }
+
+    if (result.type === 'queued') {
+      send('queued', {
+        processNumber: proc.numeroProcesso,
+        message: 'Aguardando PJE gerar PDF...',
+        estimatedWait: 30,
+      });
+
+      return { processNumber: proc.numeroProcesso, type: 'queued' };
+    }
+
+    // error
+    send('error', {
+      processNumber: proc.numeroProcesso,
+      message: result.error || 'Erro desconhecido',
+      code: 'EXTRACT_FAILED',
+    });
+
+    return {
+      processNumber: proc.numeroProcesso,
+      type: 'error',
+      error: result.error || 'Erro desconhecido',
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Erro';
+    console.error(`[STREAM] [${index + 1}/${total}] ${proc.numeroProcesso} EXCEPTION: ${msg}`);
+
+    send('error', {
+      processNumber: proc.numeroProcesso,
+      message: msg,
+      code: 'UNEXPECTED',
+    });
+
+    return { processNumber: proc.numeroProcesso, type: 'error', error: msg };
+  }
+}
+
+// ── Coleta de pendentes ─────────────────────────────────────
+
+async function collectPending(
+  ctx: StreamContext,
+  pendingQueue: PendingProcess[],
+): Promise<{ success: number; failed: number }> {
+  if (pendingQueue.length === 0 || ctx.cancelled()) {
+    return { success: 0, failed: 0 };
+  }
+
+  console.log(`[STREAM] Coletando ${pendingQueue.length} downloads pendentes...`);
+  let success = 0;
+  let failed = 0;
+
+  const collected = await ctx.extractor.collectPendingUrls(
+    pendingQueue,
+    ctx.cancelled,
+  );
+
+  for (const item of collected) {
+    if (item.url) {
+      const proxyToken = registerProxyUrl(item.url);
+      ctx.send('url', {
+        processNumber: item.processNumber,
+        downloadUrl: item.url,
+        proxyUrl: `/api/pje/downloads/proxy/${proxyToken}`,
+        fileName: `${item.processNumber}.pdf`,
+        method: 'polled',
+      });
+      success++;
+    } else {
+      ctx.send('error', {
+        processNumber: item.processNumber,
+        message: item.error || 'Timeout',
+        code: 'POLL_TIMEOUT',
+      });
+      failed++;
+    }
+  }
+
+  return { success, failed };
+}
+
+// ── Route handler ───────────────────────────────────────────
+
 export async function streamRoutes(fastify: FastifyInstance) {
   fastify.get<{
     Querystring: {
@@ -55,6 +225,8 @@ export async function streamRoutes(fastify: FastifyInstance) {
     const query = request.query as any;
     const { sessionId, mode, taskName, tagId, isFavorite, processNumbers } = query;
 
+    // ── Validação de sessão ───────────────────────────────
+
     if (!sessionId) {
       return reply.status(400).send({
         success: false,
@@ -64,7 +236,7 @@ export async function streamRoutes(fastify: FastifyInstance) {
 
     const session = sessionStore.get(sessionId);
     if (!session) {
-      console.error(`[STREAM] Sessão não encontrada no store: ${sessionId.slice(0, 20)}...`);
+      console.error(`[STREAM] Sessão não encontrada: ${sessionId.slice(0, 20)}...`);
       return reply.status(401).send({
         success: false,
         error: { code: 'SESSION_EXPIRED', message: 'Sessão PJE expirada. Faça login novamente.', statusCode: 401 },
@@ -74,7 +246,7 @@ export async function streamRoutes(fastify: FastifyInstance) {
     console.log(`[STREAM] Validando sessão PJE...`);
     const sessionValid = await validatePjeSession(session);
     if (!sessionValid) {
-      console.error(`[STREAM] Sessão PJE inválida (currentUser falhou)`);
+      console.error(`[STREAM] Sessão PJE inválida`);
       sessionStore.delete(sessionId);
       return reply.status(401).send({
         success: false,
@@ -83,7 +255,10 @@ export async function streamRoutes(fastify: FastifyInstance) {
     }
     console.log(`[STREAM] Sessão PJE válida`);
 
+    // ── Controle de concorrência global/usuário ────────────
+
     const userId = session.cpf || sessionId.slice(0, 16);
+
     let totalActive = 0;
     for (const entry of activeStreams.values()) totalActive += entry.count;
     if (totalActive >= MAX_STREAMS_GLOBAL) {
@@ -92,6 +267,7 @@ export async function streamRoutes(fastify: FastifyInstance) {
         error: { code: 'SERVER_BUSY', message: `Servidor ocupado (${totalActive} downloads ativos).`, statusCode: 429 },
       });
     }
+
     const userEntry = activeStreams.get(userId);
     if (userEntry && userEntry.count >= MAX_STREAMS_PER_USER) {
       return reply.status(429).send({
@@ -105,7 +281,9 @@ export async function streamRoutes(fastify: FastifyInstance) {
       startedAt: Date.now(),
     });
 
-    console.log(`[STREAM] Iniciando stream-batch | mode=${mode} | taskName=${taskName || '-'} | tagId=${tagId || '-'}`);
+    console.log(`[STREAM] Iniciando stream-batch | mode=${mode} | taskName=${taskName || '-'} | tagId=${tagId || '-'} | parallel=${PARALLEL_SLOTS}`);
+
+    // ── SSE headers ───────────────────────────────────────
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -125,17 +303,15 @@ export async function streamRoutes(fastify: FastifyInstance) {
     request.raw.on('close', () => {
       cancelled = true;
       console.log(`[STREAM] Cliente desconectou`);
-      const entry = activeStreams.get(userId);
-      if (entry) {
-        entry.count--;
-        if (entry.count <= 0) activeStreams.delete(userId);
-      }
+      releaseStream(userId);
     });
 
     try {
       const extractor = new UrlExtractor(session);
 
       send('auth', { status: 'ok', user: session.idUsuarioLocalizacao });
+
+      // ── Listar processos ────────────────────────────────
 
       const processNumbersArray = processNumbers
         ? processNumbers.split(',').map((n: string) => n.trim()).filter(Boolean)
@@ -152,8 +328,7 @@ export async function streamRoutes(fastify: FastifyInstance) {
       });
 
       console.log(`[STREAM] Processos encontrados: ${processos.length}`);
-
-      send('listing', { total: processos.length });
+      send('listing', { total: processos.length, parallelSlots: PARALLEL_SLOTS });
 
       if (processos.length === 0 || cancelled) {
         send('done', { total: processos.length, success: 0, failed: 0, queued: 0, elapsed: 0 });
@@ -161,105 +336,83 @@ export async function streamRoutes(fastify: FastifyInstance) {
         return;
       }
 
+      // ── Pipeline paralelo ───────────────────────────────
+
       const startTime = Date.now();
       let success = 0;
       let failed = 0;
       const pendingQueue: PendingProcess[] = [];
 
+      const ctx: StreamContext = {
+        extractor,
+        send,
+        cancelled: () => cancelled,
+      };
+
+      const pool = new ParallelPool(PARALLEL_SLOTS);
+
+      /**
+       * Threshold para coletar pendentes em batch.
+       * Quando acumula PENDING_BATCH_THRESHOLD pendentes,
+       * faz coleta sem esperar o fim de todos os processos.
+       */
+      const PENDING_BATCH_THRESHOLD = 10;
+
       for (let i = 0; i < processos.length; i++) {
         if (cancelled) break;
 
         const proc = processos[i];
-        console.log(`[STREAM] [${i + 1}/${processos.length}] Extraindo URL: ${proc.numeroProcesso}`);
+        const idx = i;
 
-        send('progress', {
-          index: i + 1,
-          total: processos.length,
-          processNumber: proc.numeroProcesso,
-          status: 'requesting',
-        });
-
-        try {
-          const result = await extractor.extractDownloadUrl(proc);
-          console.log(`[STREAM] [${i + 1}/${processos.length}] ${proc.numeroProcesso} → ${result.type}${result.url ? ' (URL OK)' : ''}${result.error ? ` (${result.error})` : ''}`);
-
-          if (result.type === 'direct' && result.url) {
-            const proxyToken = registerProxyUrl(result.url);
-            send('url', {
-              processNumber: proc.numeroProcesso,
-              downloadUrl: result.url,
-              proxyUrl: `/api/pje/downloads/proxy/${proxyToken}`,
-              fileName: `${proc.numeroProcesso}.pdf`,
-              fileSize: result.fileSize,
-              method: 'direct',
-            });
-            success++;
-          } else if (result.type === 'queued') {
-            send('queued', {
-              processNumber: proc.numeroProcesso,
-              message: 'Aguardando PJE gerar PDF...',
-              estimatedWait: 30,
-            });
-            pendingQueue.push({ proc, requestedAt: Date.now() });
-          } else {
-            send('error', {
-              processNumber: proc.numeroProcesso,
-              message: result.error || 'Erro desconhecido',
-              code: 'EXTRACT_FAILED',
-            });
-            failed++;
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Erro';
-          console.error(`[STREAM] [${i + 1}/${processos.length}] ${proc.numeroProcesso} EXCEPTION: ${msg}`);
-          send('error', {
-            processNumber: proc.numeroProcesso,
-            message: msg,
-            code: 'UNEXPECTED',
-          });
-          failed++;
+        // Stagger: pequeno delay entre o ENVIO de cada tarefa ao pool
+        // (não entre o término — as tarefas rodam em paralelo)
+        if (i > 0) {
+          await sleep(REQUEST_STAGGER_MS);
         }
 
-        if (i < processos.length - 1) await sleep(1500);
+        await pool.add(async () => {
+          const result = await processOneProcess(ctx, proc, idx, processos.length);
 
-        if (pendingQueue.length >= 10 || i === processos.length - 1) {
-          if (pendingQueue.length > 0 && !cancelled) {
-            console.log(`[STREAM] Coletando ${pendingQueue.length} downloads pendentes...`);
-            const collected = await extractor.collectPendingUrls(pendingQueue, () => cancelled);
-
-            for (const item of collected) {
-              if (item.url) {
-                const proxyToken = registerProxyUrl(item.url);
-                send('url', {
-                  processNumber: item.processNumber,
-                  downloadUrl: item.url,
-                  proxyUrl: `/api/pje/downloads/proxy/${proxyToken}`,
-                  fileName: `${item.processNumber}.pdf`,
-                  method: 'polled',
-                });
-                success++;
-              } else {
-                send('error', {
-                  processNumber: item.processNumber,
-                  message: item.error || 'Timeout',
-                  code: 'POLL_TIMEOUT',
-                });
-                failed++;
-              }
-            }
-            pendingQueue.length = 0;
+          if (result.type === 'success') {
+            success++;
+          } else if (result.type === 'queued') {
+            pendingQueue.push({ proc, requestedAt: Date.now() });
+          } else {
+            failed++;
           }
+        });
+
+        // Coleta intermediária de pendentes quando acumula demais
+        if (pendingQueue.length >= PENDING_BATCH_THRESHOLD) {
+          const batch = pendingQueue.splice(0, pendingQueue.length);
+          // Roda coleta em paralelo sem bloquear o pipeline principal
+          pool.add(async () => {
+            const r = await collectPending(ctx, batch);
+            success += r.success;
+            failed += r.failed;
+          });
         }
       }
 
+      // Aguarda todas as tarefas do pool terminarem
+      await pool.drain();
+
+      // Coleta final de qualquer pendente restante
+      if (pendingQueue.length > 0 && !cancelled) {
+        const finalBatch = pendingQueue.splice(0, pendingQueue.length);
+        const r = await collectPending(ctx, finalBatch);
+        success += r.success;
+        failed += r.failed;
+      }
+
       const elapsed = Date.now() - startTime;
-      console.log(`[STREAM] Concluído: ${success} ok, ${failed} falhas (${Math.round(elapsed / 1000)}s)`);
+      console.log(`[STREAM] Concluído: ${success} ok, ${failed} falhas (${Math.round(elapsed / 1000)}s) [${PARALLEL_SLOTS} slots paralelos]`);
 
       send('done', {
         total: processos.length,
         success,
         failed,
-        queued: pendingQueue.length,
+        queued: 0,
         elapsed,
       });
 
@@ -269,11 +422,7 @@ export async function streamRoutes(fastify: FastifyInstance) {
       send('fatal', { message: msg });
     } finally {
       try { reply.raw.end(); } catch { /* already closed */ }
-      const entry = activeStreams.get(userId);
-      if (entry) {
-        entry.count--;
-        if (entry.count <= 0) activeStreams.delete(userId);
-      }
+      releaseStream(userId);
     }
   });
 }

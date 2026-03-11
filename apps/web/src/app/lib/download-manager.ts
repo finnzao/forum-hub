@@ -26,6 +26,9 @@ export interface DownloadManagerParams {
   processNumbers?: string[];
 }
 
+/** Máximo de downloads de PDF simultâneos no browser */
+const MAX_CONCURRENT_FILE_DOWNLOADS = 3;
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -48,6 +51,34 @@ async function downloadWithFallback(
     const res = await fetch(fullProxyUrl, { signal });
     if (!res.ok) throw new Error(`Proxy falhou: HTTP ${res.status}`);
     return await res.blob();
+  }
+}
+
+/**
+ * Semáforo simples para limitar downloads paralelos no browser.
+ * Evita saturar a rede do cliente com muitos fetches simultâneos.
+ */
+class Semaphore {
+  private queue: Array<() => void> = [];
+  private active = 0;
+
+  constructor(private max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.active < this.max) {
+      this.active++;
+      return;
+    }
+    return new Promise<void>((resolve) => this.queue.push(resolve));
+  }
+
+  release(): void {
+    this.active--;
+    const next = this.queue.shift();
+    if (next) {
+      this.active++;
+      next();
+    }
   }
 }
 
@@ -143,18 +174,10 @@ export class DownloadManager {
       const es = new EventSource(url);
       const signal = this.abortController!.signal;
 
-      // Rastreia downloads em andamento para não finalizar antes de todos completarem
+      // Semáforo para limitar downloads de arquivo paralelos no browser
+      const sem = new Semaphore(MAX_CONCURRENT_FILE_DOWNLOADS);
       const pendingDownloads: Promise<void>[] = [];
       let sseFinished = false;
-
-      const tryResolve = () => {
-        if (sseFinished && pendingDownloads.every(p => {
-          // Check if all settled - we use a flag approach instead
-          return true; // handled below
-        })) {
-          Promise.allSettled(pendingDownloads).then(() => resolve());
-        }
-      };
 
       signal.addEventListener('abort', () => {
         es.close();
@@ -165,7 +188,8 @@ export class DownloadManager {
         const data = JSON.parse(e.data);
         this.progress.phase = 'downloading';
         this.progress.totalProcesses = data.total;
-        this.progress.message = `${data.total} processos encontrados`;
+        this.progress.message = `${data.total} processos encontrados` +
+          (data.parallelSlots ? ` (${data.parallelSlots} slots paralelos)` : '');
         onProgress({ ...this.progress });
       });
 
@@ -185,6 +209,7 @@ export class DownloadManager {
         onProgress({ ...this.progress });
 
         const downloadPromise = (async () => {
+          await sem.acquire();
           try {
             const blob = await downloadWithFallback(
               data.downloadUrl,
@@ -207,6 +232,8 @@ export class DownloadManager {
               fileEntry.error = err instanceof Error ? err.message : 'Erro';
             }
             this.progress.failedCount++;
+          } finally {
+            sem.release();
           }
           onProgress({ ...this.progress });
         })();
