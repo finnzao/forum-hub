@@ -1,156 +1,99 @@
-// ============================================================
-// chefe-cartorio/atribuicao/page.tsx
-// Página de Atribuição de Tarefas — Importação de planilhas Exaudi
-// Consome: useImportacao (hook), componentes/importacao (UI)
-// ============================================================
-
-'use client';
-
-import React, { useCallback } from 'react';
-import { ArrowLeft, ClipboardList } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { User, Shield, Briefcase, Crown } from 'lucide-react';
 
-import { Cabecalho } from '../../componentes/layout/Cabecalho';
-import { Rodape } from '../../componentes/layout/Rodape';
-import {
-  IndicadorEtapas,
-  EtapaUpload,
-  EtapaMapeamento,
-  EtapaValidacao,
-  EtapaRevisao,
-  EtapaConcluido,
-} from '../../componentes/importacao';
-import { useImportacao } from '../../hooks/useImportacao';
-
-export default function PaginaAtribuicao() {
-  const router = useRouter();
-  const {
-    estado,
-    iniciarUpload,
-    atualizarMapeamento,
-    confirmarMapeamento,
-    avancarEtapa,
-    voltarEtapa,
-    toggleRegistro,
-    selecionarTodos,
-    deselecionarTodos,
-    descartarRegistro,
-    editarCampo,
-    confirmarImportacao,
-    resetar,
-    registrosSelecionados,
-  } = useImportacao();
-
-  const handleConfirmarImportacao = useCallback(() => {
-    const importados = confirmarImportacao();
-    // Em produção: enviar para API / serviço de distribuição
-    console.log(`${importados.length} registros importados`, importados);
-  }, [confirmarImportacao]);
-
-  const handleIrParaDistribuicao = useCallback(() => {
-    router.push('/chefe-cartorio/acompanhamento');
-  }, [router]);
+export default function SeletorPerfil() {
+  const perfis = [
+    {
+      id: 'administrador',
+      titulo: 'Administrador',
+      descricao: 'Acesso completo ao sistema de gestão institucional',
+      icone: Shield,
+      href: '/administrador',
+      cor: 'bg-blue-600 hover:bg-blue-700',
+    },
+    {
+      id: 'magistrado',
+      titulo: 'Magistrado',
+      descricao: 'Gestão de cartório e acompanhamento de processos',
+      icone: Briefcase,
+      href: '/magistrado',
+      cor: 'bg-purple-600 hover:bg-purple-700',
+    },
+    {
+      id: 'chefe-cartorio',
+      titulo: 'Chefe de Cartório',
+      descricao: 'Distribuição de tarefas, execução de atividades e controle da equipe',
+      icone: Crown,
+      href: '/chefe-cartorio',
+      cor: 'bg-teal-600 hover:bg-teal-700',
+    },
+    {
+      id: 'servidor',
+      titulo: 'Servidor',
+      descricao: 'Execução de tarefas e controle de prazos',
+      icone: User,
+      href: '/servidor',
+      cor: 'bg-green-600 hover:bg-green-700',
+    },
+  ];
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Cabecalho
-        nomeUsuario="Carlos Ferreira"
-        subtitulo="Chefe de Cartório — 1ª Vara Cível"
-        tipoPerfil="chefe-cartorio"
-      />
-
-      <main className="max-w-5xl mx-auto px-8 py-12">
-        {/* Breadcrumb */}
-        <div className="mb-8">
-          <div className="flex items-center gap-2 text-sm text-slate-600 mb-4">
-            <Link
-              href="/chefe-cartorio"
-              className="hover:text-slate-900 font-semibold flex items-center gap-1.5"
-            >
-              <ArrowLeft size={14} /> Painel
-            </Link>
-            <span>›</span>
-            <span className="text-slate-900 font-semibold">Atribuição de Tarefas</span>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-slate-100 text-slate-700 border-2 border-slate-200">
-              <ClipboardList size={28} strokeWidth={2} />
-            </div>
-            <div>
-              <h2 className="text-2xl font-bold text-slate-900">
-                Importar Processos e Atribuir Tarefas
-              </h2>
-              <p className="text-slate-600 text-sm mt-1">
-                Importe planilhas do Exaudi, revise os dados e distribua para a equipe
-              </p>
-            </div>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
+      <div className="max-w-6xl w-full">
+        {/* Cabeçalho */}
+        <div className="text-center mb-12">
+          <h1 className="text-5xl font-bold text-white mb-4">FORUM HUB</h1>
+          <p className="text-xl text-slate-300">
+            Sistema Integrado de Gestão Institucional
+          </p>
+          <div className="mt-4 inline-block px-6 py-2 bg-amber-500 text-slate-900 font-bold text-sm uppercase tracking-wide">
+            Modo Desenvolvimento
           </div>
         </div>
 
-        {/* Indicador de etapas */}
-        <IndicadorEtapas etapaAtual={estado.etapa} />
+        {/* Cartões de Perfil */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {perfis.map((perfil) => {
+            const Icone = perfil.icone;
+            return (
+              <Link
+                key={perfil.id}
+                href={perfil.href}
+                className="group"
+              >
+                <div className="bg-white/10 backdrop-blur-sm border-2 border-white/20 p-8 transition-all duration-300 hover:bg-white/20 hover:border-white/40 hover:scale-105">
+                  <div className={`${perfil.cor} w-16 h-16 flex items-center justify-center mb-6 transition-transform group-hover:scale-110`}>
+                    <Icone size={32} className="text-white" strokeWidth={2} />
+                  </div>
+                  
+                  <h2 className="text-2xl font-bold text-white mb-3">
+                    {perfil.titulo}
+                  </h2>
+                  
+                  <p className="text-slate-300 text-sm leading-relaxed">
+                    {perfil.descricao}
+                  </p>
 
-        {/* Conteúdo da etapa ativa */}
-        <div className="bg-white border-2 border-slate-200 p-8">
-          {estado.etapa === 'upload' && (
-            <EtapaUpload
-              carregando={estado.carregando}
-              erro={estado.erro}
-              onUpload={iniciarUpload}
-            />
-          )}
-
-          {estado.etapa === 'mapeamento' && estado.parsing && (
-            <EtapaMapeamento
-              parsing={estado.parsing}
-              mapeamento={estado.mapeamento}
-              erro={estado.erro}
-              onAtualizarMapeamento={atualizarMapeamento}
-              onConfirmar={confirmarMapeamento}
-              onVoltar={voltarEtapa}
-            />
-          )}
-
-          {estado.etapa === 'validacao' && estado.validacao && (
-            <EtapaValidacao
-              validacao={estado.validacao}
-              onProsseguir={avancarEtapa}
-              onVoltar={voltarEtapa}
-            />
-          )}
-
-          {estado.etapa === 'revisao' && estado.validacao && (
-            <EtapaRevisao
-              registros={estado.validacao.registros}
-              mapeamento={estado.mapeamento}
-              registrosSelecionados={registrosSelecionados.length}
-              onToggle={toggleRegistro}
-              onSelecionarTodos={selecionarTodos}
-              onDeselecionarTodos={deselecionarTodos}
-              onDescartar={descartarRegistro}
-              onEditarCampo={editarCampo}
-              onConfirmar={handleConfirmarImportacao}
-              onVoltar={voltarEtapa}
-            />
-          )}
-
-          {estado.etapa === 'concluido' && (
-            <EtapaConcluido
-              totalImportados={registrosSelecionados.length}
-              totalDescartados={
-                (estado.validacao?.resumo.total || 0) - registrosSelecionados.length
-              }
-              nomeArquivo={estado.parsing?.nomeArquivo || ''}
-              onNovaImportacao={resetar}
-              onIrParaDistribuicao={handleIrParaDistribuicao}
-            />
-          )}
+                  <div className="mt-6 text-sm font-semibold text-white group-hover:translate-x-2 transition-transform inline-flex items-center gap-2">
+                    Acessar perfil
+                    <span>→</span>
+                  </div>
+                </div>
+              </Link>
+            );
+          })}
         </div>
-      </main>
 
-      <Rodape />
+        {/* Rodapé */}
+        <div className="mt-12 text-center">
+          <p className="text-slate-400 text-sm">
+            Selecione um perfil para visualizar a interface correspondente
+          </p>
+          <p className="text-slate-500 text-xs mt-2">
+            Versão 1.0 • {new Date().getFullYear()}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

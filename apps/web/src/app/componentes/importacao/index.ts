@@ -9,3 +9,4 @@ export { EtapaMapeamento } from './EtapaMapeamento';
 export { EtapaValidacao } from './EtapaValidacao';
 export { EtapaRevisao } from './EtapaRevisao';
 export { EtapaConcluido } from './EtapaConcluido';
+export { SeletorPadroes } from './SeletorPadroes';

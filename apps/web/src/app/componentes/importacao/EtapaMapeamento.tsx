@@ -1,22 +1,31 @@
 // ============================================================
 // componentes/importacao/EtapaMapeamento.tsx
-// Etapa 2: Mapeamento configurável de colunas
+// Etapa 2: Mapeamento configurável de colunas + padrões salvos
 // ============================================================
 
 'use client';
 
 import React from 'react';
 import {
-  Columns3, ArrowRight, AlertCircle, CheckCircle, FileSpreadsheet,
+  ArrowRight, AlertCircle, CheckCircle, FileSpreadsheet,
 } from 'lucide-react';
-import type { MapeamentoColuna, CampoSistema, ResultadoParsing } from '../../types/importacao';
+import type {
+  MapeamentoColuna, CampoSistema, ResultadoParsing, PadraoMapeamento,
+} from '../../types/importacao';
 import { CAMPOS_SISTEMA } from '../../types/importacao';
+import { SeletorPadroes } from './SeletorPadroes';
 
 interface EtapaMapeamentoProps {
   parsing: ResultadoParsing;
   mapeamento: MapeamentoColuna[];
   erro: string | null;
+  padraoAtivo: string | null;
+  padroes: PadraoMapeamento[];
   onAtualizarMapeamento: (indice: number, campo: CampoSistema) => void;
+  onAplicarPadrao: (id: string) => void;
+  onSalvarPadrao: (nome: string, descricao: string, colunasVisiveis: CampoSistema[]) => void;
+  onExcluirPadrao: (id: string) => void;
+  onLimparPadrao: () => void;
   onConfirmar: () => void;
   onVoltar: () => void;
 }
@@ -25,7 +34,13 @@ export const EtapaMapeamento: React.FC<EtapaMapeamentoProps> = ({
   parsing,
   mapeamento,
   erro,
+  padraoAtivo,
+  padroes,
   onAtualizarMapeamento,
+  onAplicarPadrao,
+  onSalvarPadrao,
+  onExcluirPadrao,
+  onLimparPadrao,
   onConfirmar,
   onVoltar,
 }) => {
@@ -40,7 +55,7 @@ export const EtapaMapeamento: React.FC<EtapaMapeamentoProps> = ({
           <h3 className="text-lg font-bold text-slate-900 mb-2">Mapeamento de Colunas</h3>
           <p className="text-sm text-slate-600">
             Associe cada coluna do arquivo ao campo correspondente no sistema.
-            O mapeamento automático foi sugerido — ajuste conforme necessário.
+            Use um padrão salvo ou ajuste o mapeamento automático.
           </p>
         </div>
         <div className="flex items-center gap-2 px-3 py-2 bg-slate-100 border-2 border-slate-200 text-xs font-semibold text-slate-700">
@@ -56,6 +71,17 @@ export const EtapaMapeamento: React.FC<EtapaMapeamentoProps> = ({
           <p className="text-sm text-red-700">{erro}</p>
         </div>
       )}
+
+      {/* ── Seletor de Padrões ── */}
+      <SeletorPadroes
+        padroes={padroes}
+        padraoAtivo={padraoAtivo}
+        mapeamentoAtual={mapeamento}
+        onAplicarPadrao={onAplicarPadrao}
+        onSalvarPadrao={onSalvarPadrao}
+        onExcluirPadrao={onExcluirPadrao}
+        onLimparPadrao={onLimparPadrao}
+      />
 
       {/* Tabela de mapeamento */}
       <div className="bg-white border-2 border-slate-200 overflow-hidden mb-6">
@@ -91,7 +117,6 @@ export const EtapaMapeamento: React.FC<EtapaMapeamentoProps> = ({
           {mapeamento.map((item, idx) => {
             const eMapeado = item.campoSistema !== 'ignorar';
             const eObrigatorio = item.campoSistema === 'numero_processo';
-            const configCampo = CAMPOS_SISTEMA.find((c) => c.campo === item.campoSistema);
 
             return (
               <div

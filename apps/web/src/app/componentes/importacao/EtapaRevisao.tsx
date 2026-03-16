@@ -10,12 +10,13 @@ import {
   CheckCircle, AlertTriangle, AlertCircle, Copy, Trash2,
   Edit3, Save, X, Filter,
 } from 'lucide-react';
-import type { RegistroImportado, StatusRegistro, MapeamentoColuna } from '../../types/importacao';
+import type { RegistroImportado, StatusRegistro, MapeamentoColuna, CampoSistema } from '../../types/importacao';
 import { CAMPOS_SISTEMA } from '../../types/importacao';
 
 interface EtapaRevisaoProps {
   registros: RegistroImportado[];
   mapeamento: MapeamentoColuna[];
+  colunasVisiveis: CampoSistema[] | null; // null = mostrar todas
   registrosSelecionados: number;
   onToggle: (id: string) => void;
   onSelecionarTodos: () => void;
@@ -43,6 +44,7 @@ const COR_STATUS: Record<StatusRegistro, string> = {
 export const EtapaRevisao: React.FC<EtapaRevisaoProps> = ({
   registros,
   mapeamento,
+  colunasVisiveis,
   registrosSelecionados,
   onToggle,
   onSelecionarTodos,
@@ -55,15 +57,16 @@ export const EtapaRevisao: React.FC<EtapaRevisaoProps> = ({
   const [filtroStatus, setFiltroStatus] = useState<StatusRegistro | 'todos'>('todos');
   const [editandoId, setEditandoId] = useState<string | null>(null);
 
-  // Campos mapeados (excluindo ignorados)
+  // Campos mapeados (excluindo ignorados), filtrados por visibilidade do padrão
   const camposMapeados = useMemo(() => {
     return mapeamento
       .filter((m) => m.campoSistema !== 'ignorar')
+      .filter((m) => !colunasVisiveis || colunasVisiveis.includes(m.campoSistema))
       .map((m) => {
         const config = CAMPOS_SISTEMA.find((c) => c.campo === m.campoSistema);
         return { campo: m.campoSistema, rotulo: config?.rotulo || m.campoSistema };
       });
-  }, [mapeamento]);
+  }, [mapeamento, colunasVisiveis]);
 
   const registrosFiltrados = useMemo(() => {
     if (filtroStatus === 'todos') return registros;

@@ -114,6 +114,28 @@ export interface EstadoImportacao {
   parsing: ResultadoParsing | null;
   mapeamento: MapeamentoColuna[];
   validacao: ResultadoValidacao | null;
+  padraoAtivo: string | null; // id do padrão aplicado (null = automático)
   carregando: boolean;
   erro: string | null;
+}
+
+// ── Padrões de Mapeamento (salvos por perfil) ────────────
+
+/** Regra individual dentro de um padrão: coluna original → campo do sistema */
+export interface RegraMapeamento {
+  colunaOriginal: string;
+  campoSistema: CampoSistema;
+}
+
+/** Padrão de mapeamento salvo pelo usuário */
+export interface PadraoMapeamento {
+  id: string;
+  nome: string;
+  descricao: string;
+  perfil: string;           // perfil que criou: 'chefe-cartorio', 'magistrado', etc.
+  criadoPor: string;        // nome do usuário
+  criadoEm: string;         // ISO date
+  atualizadoEm: string;     // ISO date
+  regras: RegraMapeamento[];
+  colunasVisiveis: CampoSistema[]; // quais campos mostrar na revisão
 }

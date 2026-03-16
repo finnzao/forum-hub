@@ -1,8 +1,12 @@
-
+// ============================================================
+// chefe-cartorio/atribuicao/page.tsx
+// Página de Atribuição de Tarefas — Importação com padrões por perfil
+// Consome: useImportacao, usePadroesMapeamento, componentes/importacao
+// ============================================================
 
 'use client';
 
-import { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { ArrowLeft, ClipboardList } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -18,9 +22,17 @@ import {
   EtapaConcluido,
 } from '../../componentes/importacao';
 import { useImportacao } from '../../hooks/useImportacao';
+import { usePadroesMapeamento } from '../../hooks/usePadroesMapeamento';
+import type { CampoSistema } from '../../types/importacao';
+import { obterPadrao } from '../../lib/importacao';
+
+// Em produção: vem do contexto de autenticação
+const PERFIL = 'chefe-cartorio';
+const NOME_USUARIO = 'Carlos Ferreira';
 
 export default function PaginaAtribuicao() {
   const router = useRouter();
+
   const {
     estado,
     iniciarUpload,
@@ -36,11 +48,58 @@ export default function PaginaAtribuicao() {
     confirmarImportacao,
     resetar,
     registrosSelecionados,
+    aplicarPadraoAoMapeamento,
+    limparPadrao,
   } = useImportacao();
+
+  const {
+    padroes,
+    salvarComoPadrao,
+    excluirPadrao,
+    aplicarPadraoSalvo,
+  } = usePadroesMapeamento(PERFIL, NOME_USUARIO);
+
+  // ── Callbacks de padrões ─────────────────────────────
+
+  const handleAplicarPadrao = useCallback(
+    (padraoId: string) => {
+      const novoMapeamento = aplicarPadraoSalvo(padraoId, estado.mapeamento);
+      if (novoMapeamento) {
+        aplicarPadraoAoMapeamento(novoMapeamento, padraoId);
+      }
+    },
+    [aplicarPadraoSalvo, estado.mapeamento, aplicarPadraoAoMapeamento],
+  );
+
+  const handleSalvarPadrao = useCallback(
+    (nome: string, descricao: string, colunasVisiveis: CampoSistema[]) => {
+      salvarComoPadrao(nome, descricao, estado.mapeamento, colunasVisiveis);
+    },
+    [salvarComoPadrao, estado.mapeamento],
+  );
+
+  const handleExcluirPadrao = useCallback(
+    (id: string) => {
+      excluirPadrao(id);
+      if (estado.padraoAtivo === id) {
+        limparPadrao();
+      }
+    },
+    [excluirPadrao, estado.padraoAtivo, limparPadrao],
+  );
+
+  // ── Colunas visíveis baseadas no padrão ativo ────────
+
+  const colunasVisiveis = useMemo(() => {
+    if (!estado.padraoAtivo) return null; // null = mostrar todas
+    const padrao = obterPadrao(estado.padraoAtivo);
+    return padrao?.colunasVisiveis || null;
+  }, [estado.padraoAtivo]);
+
+  // ── Importação final ─────────────────────────────────
 
   const handleConfirmarImportacao = useCallback(() => {
     const importados = confirmarImportacao();
-    // Em produção: enviar para API / serviço de distribuição
     console.log(`${importados.length} registros importados`, importados);
   }, [confirmarImportacao]);
 
@@ -51,7 +110,7 @@ export default function PaginaAtribuicao() {
   return (
     <div className="min-h-screen bg-slate-50">
       <Cabecalho
-        nomeUsuario="Carlos Ferreira"
+        nomeUsuario={NOME_USUARIO}
         subtitulo="Chefe de Cartório — 1ª Vara Cível"
         tipoPerfil="chefe-cartorio"
       />
@@ -103,7 +162,13 @@ export default function PaginaAtribuicao() {
               parsing={estado.parsing}
               mapeamento={estado.mapeamento}
               erro={estado.erro}
+              padraoAtivo={estado.padraoAtivo}
+              padroes={padroes}
               onAtualizarMapeamento={atualizarMapeamento}
+              onAplicarPadrao={handleAplicarPadrao}
+              onSalvarPadrao={handleSalvarPadrao}
+              onExcluirPadrao={handleExcluirPadrao}
+              onLimparPadrao={limparPadrao}
               onConfirmar={confirmarMapeamento}
               onVoltar={voltarEtapa}
             />
@@ -121,6 +186,7 @@ export default function PaginaAtribuicao() {
             <EtapaRevisao
               registros={estado.validacao.registros}
               mapeamento={estado.mapeamento}
+              colunasVisiveis={colunasVisiveis}
               registrosSelecionados={registrosSelecionados.length}
               onToggle={toggleRegistro}
               onSelecionarTodos={selecionarTodos}

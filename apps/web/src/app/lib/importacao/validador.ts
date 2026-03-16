@@ -20,6 +20,50 @@ const REGEX_PROCESSO_CNJ = /^\d{7}-\d{2}\.\d{4}\.\d{1,2}\.\d{2}\.\d{4}$/;
 const REGEX_PROCESSO_FLEXIVEL = /^\d{7,20}[-.]?\d{0,2}[.]?\d{0,4}[.]?\d{0,2}[.]?\d{0,2}[.]?\d{0,4}$/;
 
 /**
+ * Verifica se uma string representa uma data válida.
+ * Aceita os formatos mais comuns em planilhas brasileiras:
+ *   - DD/MM/AAAA (padrão BR)
+ *   - DD-MM-AAAA
+ *   - AAAA-MM-DD (ISO)
+ *   - DD/MM/AA
+ *   - Número serial do Excel (ex: 46052)
+ *   - Qualquer string que Date.parse() consiga interpretar
+ */
+function ehDataValida(valor: string): boolean {
+  // 1) Formato BR: DD/MM/AAAA ou DD-MM-AAAA ou DD.MM.AAAA
+  const regexBR = /^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/;
+  const matchBR = valor.match(regexBR);
+  if (matchBR) {
+    const dia = parseInt(matchBR[1], 10);
+    const mes = parseInt(matchBR[2], 10);
+    const ano = parseInt(matchBR[3], 10);
+    // Validação básica de ranges
+    if (mes >= 1 && mes <= 12 && dia >= 1 && dia <= 31 && ano >= 1) {
+      return true;
+    }
+  }
+
+  // 2) Formato ISO: AAAA-MM-DD
+  const regexISO = /^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/;
+  if (regexISO.test(valor)) {
+    return true;
+  }
+
+  // 3) Número serial do Excel (inteiro positivo entre 1 e 99999)
+  const serial = Number(valor);
+  if (!isNaN(serial) && serial > 0 && serial < 100000 && Number.isInteger(serial)) {
+    return true;
+  }
+
+  // 4) Fallback: Date.parse consegue interpretar
+  if (!isNaN(Date.parse(valor))) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Valida um único registro e retorna status + erros encontrados.
  */
 function validarRegistro(
@@ -52,7 +96,7 @@ function validarRegistro(
   // Validar data (se mapeada)
   const dataStr = dados['data_movimentacao'];
   if (dataStr && dataStr.trim().length > 0) {
-    const dataValida = !isNaN(Date.parse(dataStr)) || /^\d{2}\/\d{2}\/\d{4}$/.test(dataStr);
+    const dataValida = ehDataValida(dataStr.trim());
     if (!dataValida) {
       erros.push('Formato de data não reconhecido');
     }

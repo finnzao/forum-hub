@@ -49,6 +49,10 @@ interface UseImportacaoReturn {
   resetar: () => void;
   registrosSelecionados: RegistroImportado[];
   podeProsseguir: boolean;
+
+  /** Padrões de mapeamento */
+  aplicarPadraoAoMapeamento: (novoMapeamento: MapeamentoColuna[], padraoId: string) => void;
+  limparPadrao: () => void;
 }
 
 const ESTADO_INICIAL: EstadoImportacao = {
@@ -57,6 +61,7 @@ const ESTADO_INICIAL: EstadoImportacao = {
   parsing: null,
   mapeamento: [],
   validacao: null,
+  padraoAtivo: null,
   carregando: false,
   erro: null,
 };
@@ -250,6 +255,34 @@ export function useImportacao(): UseImportacaoReturn {
     setEstado(ESTADO_INICIAL);
   }, []);
 
+  // ── Padrões de Mapeamento ──────────────────────────────
+
+  const aplicarPadraoAoMapeamento = useCallback(
+    (novoMapeamento: MapeamentoColuna[], padraoId: string) => {
+      setEstado((prev) => ({
+        ...prev,
+        mapeamento: novoMapeamento,
+        padraoAtivo: padraoId,
+        erro: null,
+      }));
+    },
+    [],
+  );
+
+  const limparPadrao = useCallback(() => {
+    setEstado((prev) => {
+      if (!prev.parsing) return { ...prev, padraoAtivo: null };
+      // Restaurar mapeamento automático
+      const mapeamentoAuto = sugerirMapeamento(prev.parsing);
+      return {
+        ...prev,
+        mapeamento: mapeamentoAuto,
+        padraoAtivo: null,
+        erro: null,
+      };
+    });
+  }, []);
+
   const registrosSelecionados = useMemo(() => {
     return estado.validacao?.registros.filter((r) => r.selecionado) || [];
   }, [estado.validacao]);
@@ -257,7 +290,7 @@ export function useImportacao(): UseImportacaoReturn {
   const podeProsseguir = useMemo(() => {
     switch (estado.etapa) {
       case 'upload':
-        return false; // precisa selecionar arquivo
+        return false;
       case 'mapeamento':
         return estado.mapeamento.some((m) => m.campoSistema === 'numero_processo');
       case 'validacao':
@@ -285,5 +318,7 @@ export function useImportacao(): UseImportacaoReturn {
     resetar,
     registrosSelecionados,
     podeProsseguir,
+    aplicarPadraoAoMapeamento,
+    limparPadrao,
   };
 }
