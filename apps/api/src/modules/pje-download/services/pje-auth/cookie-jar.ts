@@ -72,6 +72,26 @@ export class CookieJar {
     this.jar.get(domain)![name] = value;
   }
 
+  /**
+   * Takes a snapshot of all cookies for a specific domain.
+   * Useful for saving OAuth state cookies before SSO POST.
+   */
+  snapshotDomain(domain: string): Record<string, string> {
+    const cookies = this.jar.get(domain);
+    return cookies ? { ...cookies } : {};
+  }
+
+  /**
+   * Restores cookies for a specific domain from a snapshot,
+   * overwriting any current cookies for that domain.
+   */
+  restoreDomain(domain: string, snapshot: Record<string, string>): void {
+    if (Object.keys(snapshot).length > 0) {
+      this.jar.set(domain, { ...snapshot });
+      console.log(`[PJE-AUTH] Cookies do domínio ${domain} restaurados: ${Object.keys(snapshot).join(', ')}`);
+    }
+  }
+
   exportAll(): Record<string, string> {
     const result: Record<string, string> = {};
     for (const [domain, cookies] of this.jar)
@@ -118,5 +138,7 @@ export class CookieJar {
     }
   }
 
-  clear(): void { this.jar.clear(); }
+  clear(): void {
+    this.jar.clear();
+  }
 }

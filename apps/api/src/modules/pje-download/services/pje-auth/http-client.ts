@@ -15,6 +15,10 @@ export class PJEHttpClient {
     let currentMethod = method;
     let currentBody: URLSearchParams | undefined = body;
 
+    // FIX: Track visited URLs to detect redirect loops
+    const visitedUrls = new Set<string>();
+    let loopDetected = false;
+
     for (let i = 0; i < MAX_REDIRECTS; i++) {
       const cookieStr = this.cookieJar.serializeForDomain(currentUrl);
 
@@ -69,6 +73,54 @@ export class PJEHttpClient {
         }
 
         console.log(`[PJE-AUTH]   redirect #${i + 1}: ${res.status} ${truncUrl(currentUrl)} → ${truncUrl(nextUrl)}`);
+
+        // FIX: Detect redirect loops - if we're going back to SSO from PJE
+        const urlKey = normalizeUrlForLoopDetection(nextUrl);
+        if (visitedUrls.has(urlKey)) {
+          console.warn(`[PJE-AUTH]   ⚠️ Loop detectado: já visitamos ${truncUrl(nextUrl)}`);
+          loopDetected = true;
+          // Don't break immediately - let it continue to get the final page
+        }
+        visitedUrls.add(normalizeUrlForLoopDetection(currentUrl));
+
+        if (loopDetected && nextUrl.includes('sso.cloud.pje.jus.br') && currentUrl.includes('pje.tjba.jus.br')) {
+          console.warn(`[PJE-AUTH]   ⚠️ Interrompendo cadeia de redirects (PJE→SSO loop)`);
+          // Follow this last redirect to get the SSO page
+          const loopRes = await fetch(nextUrl, {
+            method: 'GET',
+            headers: {
+              'Cookie': this.cookieJar.serializeForDomain(nextUrl),
+              'User-Agent': headers['User-Agent'],
+              'Accept': headers['Accept'],
+            },
+            redirect: 'manual',
+          });
+          this.cookieJar.extractFromResponse(loopRes, nextUrl);
+
+          if (loopRes.status >= 300 && loopRes.status < 400) {
+            const finalLocation = loopRes.headers.get('location');
+            await loopRes.text().catch(() => {});
+            if (finalLocation) {
+              const finalUrl = resolveUrl(finalLocation, nextUrl);
+              const finalRes = await fetch(finalUrl, {
+                method: 'GET',
+                headers: {
+                  'Cookie': this.cookieJar.serializeForDomain(finalUrl),
+                  'User-Agent': headers['User-Agent'],
+                  'Accept': headers['Accept'],
+                },
+                redirect: 'follow',
+              });
+              this.cookieJar.extractFromResponse(finalRes, finalUrl);
+              const responseBody = await finalRes.text();
+              return { body: responseBody, finalUrl: finalRes.url, status: finalRes.status };
+            }
+          }
+
+          const responseBody = await loopRes.text();
+          return { body: responseBody, finalUrl: loopRes.url || nextUrl, status: loopRes.status };
+        }
+
         currentUrl = nextUrl;
         currentMethod = 'GET';
         currentBody = undefined;
@@ -138,4 +190,13 @@ function truncUrl(url: string): string {
     const search = u.search.length > 40 ? u.search.substring(0, 40) + '...' : u.search;
     return `${u.hostname}${u.pathname}${search}`;
   } catch { return url.substring(0, 100); }
+}
+
+function normalizeUrlForLoopDetection(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.hostname}${u.pathname}`;
+  } catch {
+    return url;
+  }
 }

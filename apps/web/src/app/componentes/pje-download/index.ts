@@ -1,6 +1,7 @@
 export { EtapaLogin } from './EtapaLogin';
 export { EtapaPerfil } from './EtapaPerfil';
 export { EtapaDownload } from './EtapaDownload';
+export { EtapaDownloadStream } from './EtapaDownloadStream';
 export { EtapaAdvogados } from './EtapaAdvogados';
 export { CardJob } from './CardJob';
 export { PainelLogs } from './PainelLogs';
