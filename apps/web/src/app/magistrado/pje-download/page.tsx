@@ -254,11 +254,6 @@ export default function PaginaDownloadPJE() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <Cabecalho
-        nomeUsuario={sessao.usuario?.nomeUsuario || 'Dr. João Magistrado'}
-        subtitulo={sessao.perfilSelecionado?.nome || '1ª e 2ª Vara Cível'}
-        tipoPerfil="magistrado"
-      />
 
       <main className="flex-1 max-w-7xl mx-auto px-8 py-8 w-full">
         <div className="mb-8">

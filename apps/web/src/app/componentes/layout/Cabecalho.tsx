@@ -4,7 +4,7 @@ import { User, LogOut } from 'lucide-react';
 interface CabecalhoProps {
   nomeUsuario: string;
   subtitulo: string;
-  tipoPerfil: 'administrador' | 'magistrado' | 'servidor';
+  tipoPerfil: 'administrador' | 'magistrado' | 'servidor' | 'chefe-cartorio';
 }
 
 export const Cabecalho: React.FC<CabecalhoProps> = ({ 
@@ -20,6 +20,8 @@ export const Cabecalho: React.FC<CabecalhoProps> = ({
         return 'Magistrado';
       case 'servidor':
         return 'Cartório / Servidor';
+      case 'chefe-cartorio':
+        return 'Chefia de Cartório';
     }
   };
 

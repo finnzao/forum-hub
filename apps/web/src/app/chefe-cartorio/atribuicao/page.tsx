@@ -1,12 +1,8 @@
-// ============================================================
-// chefe-cartorio/atribuicao/page.tsx
-// Página de Atribuição de Tarefas — Importação de planilhas Exaudi
-// Consome: useImportacao (hook), componentes/importacao (UI)
-// ============================================================
+
 
 'use client';
 
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 import { ArrowLeft, ClipboardList } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
