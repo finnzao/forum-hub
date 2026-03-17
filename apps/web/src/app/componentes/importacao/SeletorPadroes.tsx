@@ -8,7 +8,7 @@
 import React, { useState } from 'react';
 import {
   BookmarkPlus, FolderOpen, Trash2, X, Save,
-  ChevronDown, ChevronUp, Eye, EyeOff, Pencil,
+  ChevronDown, ChevronUp, Eye, EyeOff,
 } from 'lucide-react';
 import type { PadraoMapeamento, MapeamentoColuna, CampoSistema } from '../../types/importacao';
 import { CAMPOS_SISTEMA } from '../../types/importacao';
@@ -34,6 +34,7 @@ export const SeletorPadroes: React.FC<SeletorPadroesProps> = ({
   onExcluirPadrao,
   onLimparPadrao,
 }) => {
+  // Estado inicial sempre 'fechado' para não poluir a tela
   const [modo, setModo] = useState<Modo>('fechado');
   const [nome, setNome] = useState('');
   const [descricao, setDescricao] = useState('');
@@ -130,84 +131,96 @@ export const SeletorPadroes: React.FC<SeletorPadroesProps> = ({
 
       {/* Painel: Lista de padrões */}
       {modo === 'lista' && (
-        <div className="border-2 border-t-0 border-slate-200 bg-white divide-y divide-slate-100">
-          {padroes.map((padrao) => {
-            const ativo = padraoAtivo === padrao.id;
-            const confirmando = confirmandoExclusao === padrao.id;
+        <div className="border-2 border-t-0 border-slate-200 bg-white">
+          {/* Lista com altura fixa e scroll */}
+          <div className="max-h-64 overflow-y-auto divide-y divide-slate-100">
+            {padroes.map((padrao) => {
+              const ativo = padraoAtivo === padrao.id;
+              const confirmando = confirmandoExclusao === padrao.id;
 
-            return (
-              <div
-                key={padrao.id}
-                className={`p-3 transition-colors ${ativo ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
-              >
-                {confirmando ? (
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-red-700 font-semibold">
-                      Excluir "{padrao.nome}"?
-                    </span>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleExcluir(padrao.id)}
-                        className="px-3 py-1 text-xs font-bold text-white bg-red-600 hover:bg-red-700 transition-colors"
-                      >
-                        Confirmar
-                      </button>
-                      <button
-                        onClick={() => setConfirmandoExclusao(null)}
-                        className="px-3 py-1 text-xs text-slate-500 hover:text-slate-700"
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-start gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-sm font-bold text-slate-900 truncate">
-                          {padrao.nome}
-                        </span>
-                        {ativo && (
-                          <span className="text-[10px] font-bold px-1.5 py-0.5 bg-blue-100 text-blue-700">
-                            ATIVO
-                          </span>
-                        )}
-                      </div>
-                      {padrao.descricao && (
-                        <p className="text-xs text-slate-500 truncate mb-1">{padrao.descricao}</p>
-                      )}
-                      <div className="flex items-center gap-3 text-[10px] text-slate-400">
-                        <span>{padrao.regras.length} regras</span>
-                        <span>•</span>
-                        <span>{padrao.colunasVisiveis.length} colunas visíveis</span>
-                        <span>•</span>
-                        <span>por {padrao.criadoPor}</span>
-                        <span>•</span>
-                        <span>{new Date(padrao.atualizadoEm).toLocaleDateString('pt-BR')}</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1 flex-shrink-0">
-                      {!ativo && (
+              return (
+                <div
+                  key={padrao.id}
+                  className={`p-3 transition-colors ${ativo ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                >
+                  {confirmando ? (
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-red-700 font-semibold">
+                        Excluir &ldquo;{padrao.nome}&rdquo;?
+                      </span>
+                      <div className="flex gap-2">
                         <button
-                          onClick={() => onAplicarPadrao(padrao.id)}
-                          className="px-3 py-1.5 text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+                          onClick={() => handleExcluir(padrao.id)}
+                          className="px-3 py-1 text-xs font-bold text-white bg-red-600 hover:bg-red-700 transition-colors"
                         >
-                          Aplicar
+                          Confirmar
                         </button>
-                      )}
-                      <button
-                        onClick={() => setConfirmandoExclusao(padrao.id)}
-                        className="p-1.5 text-slate-400 hover:text-red-500 transition-colors"
-                        title="Excluir"
-                      >
-                        <Trash2 size={13} />
-                      </button>
+                        <button
+                          onClick={() => setConfirmandoExclusao(null)}
+                          className="px-3 py-1 text-xs text-slate-500 hover:text-slate-700"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                  ) : (
+                    <div className="flex items-start gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-sm font-bold text-slate-900 truncate">
+                            {padrao.nome}
+                          </span>
+                          {ativo && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 bg-blue-100 text-blue-700">
+                              ATIVO
+                            </span>
+                          )}
+                        </div>
+                        {padrao.descricao && (
+                          <p className="text-xs text-slate-500 truncate mb-1">{padrao.descricao}</p>
+                        )}
+                        <div className="flex items-center gap-3 text-[10px] text-slate-400">
+                          <span>{padrao.regras.length} regras</span>
+                          <span>•</span>
+                          <span>{padrao.colunasVisiveis.length} colunas visíveis</span>
+                          <span>•</span>
+                          <span>por {padrao.criadoPor}</span>
+                          <span>•</span>
+                          <span>{new Date(padrao.atualizadoEm).toLocaleDateString('pt-BR')}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        {!ativo && (
+                          <button
+                            onClick={() => onAplicarPadrao(padrao.id)}
+                            className="px-3 py-1.5 text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+                          >
+                            Aplicar
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setConfirmandoExclusao(padrao.id)}
+                          className="p-1.5 text-slate-400 hover:text-red-500 transition-colors"
+                          title="Excluir"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Rodapé da lista */}
+          {padroes.length > 3 && (
+            <div className="px-3 py-2 border-t border-slate-100 bg-slate-50">
+              <p className="text-[10px] text-slate-400 text-center">
+                {padroes.length} padrão(ões) salvo(s) — role para ver todos
+              </p>
+            </div>
+          )}
         </div>
       )}
 

@@ -57,15 +57,24 @@ export const EtapaRevisao: React.FC<EtapaRevisaoProps> = ({
   const [filtroStatus, setFiltroStatus] = useState<StatusRegistro | 'todos'>('todos');
   const [editandoId, setEditandoId] = useState<string | null>(null);
 
-  // Campos mapeados (excluindo ignorados), filtrados por visibilidade do padrão
+  // Campos mapeados (excluindo ignorados), filtrados por visibilidade do padrão.
+  // Deduplicate by campo to avoid duplicate React keys when user maps
+  // two columns to the same system field.
   const camposMapeados = useMemo(() => {
-    return mapeamento
-      .filter((m) => m.campoSistema !== 'ignorar')
-      .filter((m) => !colunasVisiveis || colunasVisiveis.includes(m.campoSistema))
-      .map((m) => {
-        const config = CAMPOS_SISTEMA.find((c) => c.campo === m.campoSistema);
-        return { campo: m.campoSistema, rotulo: config?.rotulo || m.campoSistema };
-      });
+    const seen = new Set<CampoSistema>();
+    const result: Array<{ campo: CampoSistema; rotulo: string }> = [];
+
+    for (const m of mapeamento) {
+      if (m.campoSistema === 'ignorar') continue;
+      if (colunasVisiveis && !colunasVisiveis.includes(m.campoSistema)) continue;
+      if (seen.has(m.campoSistema)) continue;
+      seen.add(m.campoSistema);
+
+      const config = CAMPOS_SISTEMA.find((c) => c.campo === m.campoSistema);
+      result.push({ campo: m.campoSistema, rotulo: config?.rotulo || m.campoSistema });
+    }
+
+    return result;
   }, [mapeamento, colunasVisiveis]);
 
   const registrosFiltrados = useMemo(() => {
@@ -201,7 +210,7 @@ export const EtapaRevisao: React.FC<EtapaRevisaoProps> = ({
 
                     {/* Dados */}
                     {camposMapeados.map((c) => (
-                      <td key={c.campo} className="px-3 py-2">
+                      <td key={`${reg.id}-${c.campo}`} className="px-3 py-2">
                         {estaEditando ? (
                           <input
                             type="text"

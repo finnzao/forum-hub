@@ -17,6 +17,7 @@ export type EtapaImportacao = 'upload' | 'mapeamento' | 'validacao' | 'revisao' 
 export type CampoSistema =
   | 'numero_processo'
   | 'data_movimentacao'
+  | 'dias_sem_mov'
   | 'tipo_acao'
   | 'situacao_atual'
   | 'classe_judicial'
@@ -25,7 +26,8 @@ export type CampoSistema =
   | 'vara'
   | 'parte_autora'
   | 'parte_re'
-  | 'advogado'
+  | 'adv_polo_ativo'
+  | 'adv_polo_passivo'
   | 'prioridade'
   | 'observacao'
   | 'ignorar';
@@ -42,6 +44,7 @@ export interface ConfigCampoSistema {
 export const CAMPOS_SISTEMA: ConfigCampoSistema[] = [
   { campo: 'numero_processo',    rotulo: 'Nº do Processo',         obrigatorio: true,  descricao: 'Número CNJ do processo' },
   { campo: 'data_movimentacao',  rotulo: 'Data da Movimentação',   obrigatorio: false, descricao: 'Data da última movimentação' },
+  { campo: 'dias_sem_mov',       rotulo: 'Dias s/ Mov.',           obrigatorio: false, descricao: 'Quantidade de dias desde a última movimentação' },
   { campo: 'tipo_acao',          rotulo: 'Tipo de Ação',           obrigatorio: false, descricao: 'Tipo/classe da ação processual' },
   { campo: 'situacao_atual',     rotulo: 'Situação Atual',         obrigatorio: false, descricao: 'Status atual do processo' },
   { campo: 'classe_judicial',    rotulo: 'Classe Judicial',        obrigatorio: false, descricao: 'Classe judicial do processo' },
@@ -50,7 +53,8 @@ export const CAMPOS_SISTEMA: ConfigCampoSistema[] = [
   { campo: 'vara',               rotulo: 'Vara',                   obrigatorio: false, descricao: 'Vara responsável' },
   { campo: 'parte_autora',       rotulo: 'Parte Autora',           obrigatorio: false, descricao: 'Nome da parte autora/requerente' },
   { campo: 'parte_re',           rotulo: 'Parte Ré',               obrigatorio: false, descricao: 'Nome da parte ré/requerida' },
-  { campo: 'advogado',           rotulo: 'Advogado',               obrigatorio: false, descricao: 'Nome do advogado' },
+  { campo: 'adv_polo_ativo',     rotulo: 'Adv. Polo Ativo',       obrigatorio: false, descricao: 'Advogado(s) do polo ativo' },
+  { campo: 'adv_polo_passivo',   rotulo: 'Adv. Polo Passivo',     obrigatorio: false, descricao: 'Advogado(s) do polo passivo' },
   { campo: 'prioridade',         rotulo: 'Prioridade',             obrigatorio: false, descricao: 'Nível de prioridade' },
   { campo: 'observacao',         rotulo: 'Observação',             obrigatorio: false, descricao: 'Observações adicionais' },
   { campo: 'ignorar',            rotulo: '(Ignorar coluna)',       obrigatorio: false, descricao: 'Coluna não será importada' },

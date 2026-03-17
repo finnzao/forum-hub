@@ -1,20 +1,11 @@
-// ============================================================
-// lib/importacao/mapeador.ts
-// Lógica de mapeamento de colunas: arquivo → sistema
-// Responsabilidade: sugerir mapeamento + aplicar mapeamento
-// ============================================================
-
 import type {
   CampoSistema,
   MapeamentoColuna,
   ResultadoParsing,
-  CAMPOS_SISTEMA,
 } from '../../types/importacao';
 
 /**
  * Padrões de nomes de colunas do Exaudi e outras fontes.
- * Cada campo do sistema tem uma lista de variações conhecidas (lowercase).
- * Quanto mais variações cadastradas, melhor o automapeamento.
  */
 const PADROES_COLUNA: Record<CampoSistema, string[]> = {
   numero_processo: [
@@ -26,6 +17,13 @@ const PADROES_COLUNA: Record<CampoSistema, string[]> = {
     'data', 'data movimentação', 'data movimentacao', 'dt movimentação', 'dt mov',
     'data ultima movimentacao', 'última movimentação', 'data mov', 'dt_mov',
     'data_movimentacao', 'data último movimento', 'dt último mov',
+  ],
+  dias_sem_mov: [
+    'dias sem movimentação', 'dias sem movimentacao', 'dias s/ mov', 'dias sem mov',
+    'qtd dias sem mov', 'quantidade dias sem movimentacao', 'dias parado',
+    'dias_sem_mov', 'dias desde ultima movimentacao', 'tempo parado',
+    'dias sem andamento', 'dias s/mov', 'qtde dias', 'quantidade de dias',
+    'qtde dias sem mov', 'quantidade de dias sem mov',
   ],
   tipo_acao: [
     'tipo', 'tipo ação', 'tipo acao', 'tipo de ação', 'ação', 'acao',
@@ -58,9 +56,17 @@ const PADROES_COLUNA: Record<CampoSistema, string[]> = {
     'réu', 'reu', 'ré', 're', 'parte ré', 'requerido', 'executado',
     'polo passivo', 'parte_re', 'impetrado', 'reclamado',
   ],
-  advogado: [
-    'advogado', 'advogados', 'representante', 'procurador', 'defensor',
-    'advogado(s)', 'adv',
+  adv_polo_ativo: [
+    'advogado polo ativo', 'adv polo ativo', 'advogado autor', 'adv autor',
+    'advogado requerente', 'adv requerente', 'adv. polo ativo',
+    'advogado do autor', 'advogado(s) polo ativo', 'representante polo ativo',
+    'procurador polo ativo', 'adv_polo_ativo',
+  ],
+  adv_polo_passivo: [
+    'advogado polo passivo', 'adv polo passivo', 'advogado réu', 'advogado reu',
+    'adv réu', 'adv reu', 'advogado requerido', 'adv requerido',
+    'adv. polo passivo', 'advogado do réu', 'advogado(s) polo passivo',
+    'representante polo passivo', 'procurador polo passivo', 'adv_polo_passivo',
   ],
   prioridade: [
     'prioridade', 'urgência', 'urgencia', 'grau prioridade', 'nivel',
