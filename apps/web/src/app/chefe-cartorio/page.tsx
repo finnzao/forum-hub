@@ -20,8 +20,6 @@ import { AtividadeServidor } from '../componentes/cartoes/AtividadeServidor';
 import { AtividadeEnviada } from '../componentes/cartoes/AtividadeEnviada';
 
 export default function PaginaChefeCartorio() {
-  // ── Dados mockados ──────────────────────────────────────
-  // Em produção viriam da API
 
   const minhasTarefas = [
     {
