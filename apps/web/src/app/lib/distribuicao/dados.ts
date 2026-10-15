@@ -16,6 +16,8 @@ import type {
   FiltrosListaTrabalho,
 } from '../../types/distribuicao';
 import { calcularProgresso } from './motor';
+import { montarAcervoCompleto } from '../mock/acervo';
+import { formatarDataBR } from '../datas';
 
 const STORAGE_KEY_LISTAS = 'forum-hub:listas-trabalho';
 const STORAGE_KEY_PROCESSOS = 'forum-hub:processos-importados';
@@ -30,56 +32,37 @@ export const SERVIDORES_MOCK: ServidorDistribuicao[] = [
   { id: 'srv-5', nome: 'Carla Mendes',     setor: '1ª Vara Cível', cota: 50,  ativo: true, processosAtribuidos: 0, ordemRecebimento: 5 },
 ];
 
-// ── Processos Mock (simula importação concluída) ────────
+// ── Processos Mock (derivados do acervo determinístico) ─
+// Usa o mesmo acervo de lib/mock/acervo.ts, então a distribuição do chefe
+// e a fila do servidor falam dos mesmos processos e não há diferença
+// entre servidor e cliente do Next (sem Math.random).
+
+const PRIORIDADE_TEXTO: Record<string, string> = { P1: 'alta', P2: 'media', P3: 'baixa' };
 
 export function gerarProcessosMock(quantidade: number = 200): ProcessoDistribuivel[] {
-  const tipos = [
-    'Ação de Indenização', 'Ação de Cobrança', 'Execução de Título',
-    'Mandado de Segurança', 'Ação Declaratória', 'Cumprimento de Sentença',
-    'Monitória', 'Embargos à Execução', 'Ação Revisional',
-  ];
-
-  const situacoes = [
-    'Aguardando despacho', 'Em andamento', 'Concluso para despacho',
-    'Aguardando manifestação', 'Pendente de citação', 'Aguardando perícia',
-  ];
-
-  const prioridades = ['alta', 'media', 'baixa'];
-
-  return Array.from({ length: quantidade }, (_, i) => {
-    const diasSemMov = Math.floor(Math.random() * 365) + 1;
-    const dataBase = new Date();
-    dataBase.setDate(dataBase.getDate() - diasSemMov);
-
-    const dia = String(dataBase.getDate()).padStart(2, '0');
-    const mes = String(dataBase.getMonth() + 1).padStart(2, '0');
-    const ano = dataBase.getFullYear();
-
-    return {
-      id: `proc-${i + 1}`,
-      numeroProcesso: gerarNumeroCNJ(i),
+  return montarAcervoCompleto()
+    .filter((p) => !p.filaEspera && !p.etiquetas.includes('GAB_nao trabalhar'))
+    .slice(0, quantidade)
+    .map((p) => ({
+      id: p.id,
+      numeroProcesso: p.numeroFormatado,
       dados: {
-        numero_processo: gerarNumeroCNJ(i),
-        tipo_acao: tipos[i % tipos.length],
-        situacao_atual: situacoes[i % situacoes.length],
-        dias_sem_mov: String(diasSemMov),
-        data_movimentacao: `${dia}/${mes}/${ano}`,
-        prioridade: prioridades[i % prioridades.length],
-        classe_judicial: `Classe ${(i % 5) + 1}`,
-        parte_autora: `Autor ${i + 1}`,
-        parte_re: `Réu ${i + 1}`,
+        numero_processo: p.numeroFormatado,
+        tipo_acao: p.classe,
+        situacao_atual: p.tarefaAtual,
+        dias_sem_mov: String(p.diasParados),
+        data_movimentacao: formatarDataBR(p.ultimoMovimentoEm),
+        prioridade: PRIORIDADE_TEXTO[p.prioridade],
+        classe_judicial: p.classe,
+        assunto: p.assunto,
+        parte_autora: p.poloAtivo,
+        parte_re: p.poloPassivo,
+        observacao: p.analise?.observacao ?? '',
+        etiquetas: p.etiquetas.join(', '),
       },
-      fontId: 'importacao-mock',
+      fontId: 'captura-mock',
       atribuido: false,
-    };
-  });
-}
-
-function gerarNumeroCNJ(indice: number): string {
-  const seq = String(indice + 1000).padStart(7, '0');
-  const dig = String((indice * 7 + 3) % 100).padStart(2, '0');
-  const ano = '2024';
-  return `${seq}-${dig}.${ano}.8.05.0001`;
+    }));
 }
 
 // ── Leitura / Escrita de Listas ─────────────────────────

@@ -58,7 +58,7 @@ export function PainelVisualizar({
         </div>
         <div>
           <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-            Qtd Atos
+            Qtd. de atos
           </label>
           <p className="text-sm text-gray-800 mt-1 font-bold">{registro.qtdAtos}</p>
         </div>
@@ -66,7 +66,7 @@ export function PainelVisualizar({
 
       <div>
         <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-          Tipo de Movimentação
+          Tipo de ato
         </label>
         <p className="mt-1">
           <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium rounded bg-slate-100 text-slate-700">
@@ -79,7 +79,7 @@ export function PainelVisualizar({
       <div>
         <div className="flex items-center justify-between mb-1">
           <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-            Nota
+            Observação
           </label>
           {!notaEditando && (
             <button
@@ -94,7 +94,8 @@ export function PainelVisualizar({
           <div className="space-y-2">
             <textarea
               value={nota}
-              onChange={(e) => setNota(e.target.value)}
+              onChange={(e) => setNota(e.target.value.slice(0, 500))}
+              maxLength={500}
               rows={3}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-500 resize-none"
               placeholder="Adicione uma observação..."
@@ -126,7 +127,7 @@ export function PainelVisualizar({
             {nota}
           </p>
         ) : (
-          <p className="text-xs text-gray-400 italic">Sem observações</p>
+          <p className="text-xs text-gray-400 italic">Sem observação</p>
         )}
       </div>
 

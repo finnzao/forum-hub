@@ -53,27 +53,28 @@ export function PainelEditar({ registro, onSalvar, onCancelar }: PainelEditarPro
           <DatePicker value={data} onChange={(v) => { setData(v); limparErro('data'); }} erro={erros.data} />
           {erros.data && <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertCircle size={11} />{erros.data}</p>}
         </CampoForm>
-        <CampoForm label="Qtd Atos">
+        <CampoForm label="Qtd. de atos">
           <input type="number" min={1} value={qtdAtos}
             onChange={(e) => setQtdAtos(parseInt(e.target.value) || 1)}
             className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-500" />
         </CampoForm>
       </div>
 
-      <CampoForm label="Tipo de Movimentação *">
+      <CampoForm label="Tipo de ato *">
         <SelectMovimentacao value={tipo} onChange={setTipo} />
       </CampoForm>
 
-      <CampoForm label="Nota (opcional)">
-        <textarea value={nota} onChange={(e) => setNota(e.target.value)} rows={3}
+      <CampoForm label="Observação (opcional)">
+        <textarea value={nota} onChange={(e) => setNota(e.target.value.slice(0, 500))} rows={3} maxLength={500}
           className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-500 resize-none"
-          placeholder="Observação..." />
+          placeholder="Informações complementares sobre este ato" />
+        <p className="text-[10px] text-slate-400 text-right tabular-nums">{nota.length}/500</p>
       </CampoForm>
 
       <div className="flex gap-2 pt-2">
         <button onClick={handleSalvar}
           className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold text-white bg-slate-800 rounded hover:bg-slate-700 transition-colors">
-          <Save size={14} /> Salvar
+          <Save size={14} /> Salvar alterações
         </button>
         <button onClick={onCancelar}
           className="px-4 py-2 text-sm font-medium text-gray-500 border border-gray-300 rounded hover:bg-gray-50 transition-colors">

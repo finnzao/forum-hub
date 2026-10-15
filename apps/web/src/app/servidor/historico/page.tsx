@@ -1,9 +1,17 @@
+// ============================================================
+// servidor/historico/page.tsx
+// Histórico de atos do servidor — listagem em planilha + painel lateral.
+// Fluxo de cadastro: "+ Registrar ato" → preencher → "Salvar ato" →
+// confirmação com "Registrar outro ato" / "Voltar para a lista".
+// Persistência: localStorage (até a API da fase 1), sobre o mock inicial.
+// ============================================================
+
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import {
   Plus, X, Bell, BellRing, Copy, FileText, Search, Filter,
-  MoreHorizontal, ArrowLeft, Download, StickyNote,
+  MoreHorizontal, ArrowLeft, Download, CheckCircle,
   ArrowUp, ArrowDown, ArrowUpDown,
 } from 'lucide-react';
 import {
@@ -15,18 +23,30 @@ import {
   PainelLembretes, LembreteComContexto,
 } from './componentes';
 import { registrosMock } from './data/dados-mock';
+import { CelulaObservacao } from '../../componentes/tabelas/TabelaProcessos';
+import { Toast, useToast } from '../../componentes/layout/Toast';
 
-type PainelModo = 'visualizar' | 'editar' | 'novo' | 'lote' | 'lembretes';
+type PainelModo = 'visualizar' | 'editar' | 'novo' | 'lote' | 'lembretes' | 'sucesso';
 
 const TITULOS_PAINEL: Record<PainelModo, string> = {
-  visualizar: 'Detalhes',
-  editar: 'Editar Registro',
-  novo: 'Novo Registro',
-  lote: 'Registro em Lote',
+  visualizar: 'Detalhes do ato',
+  editar: 'Editar ato',
+  novo: 'Registrar ato',
+  lote: 'Registrar vários atos',
   lembretes: 'Lembretes',
+  sucesso: 'Pronto',
 };
 
 const PAGE_SIZE = 30;
+const STORAGE_KEY = 'forum-hub:historico-registros-v1';
+
+interface InfoSucesso {
+  processo: string;
+  data: string;
+  tipos: string[];
+  qtdAtos: number;
+  comObservacao: boolean;
+}
 
 function parseDateBR(str: string): number {
   const m = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
@@ -58,6 +78,7 @@ function compararRegistros(a: RegistroHistorico, b: RegistroHistorico, coluna: C
 
 export default function PaginaHistorico() {
   const [registros, setRegistros] = useState<RegistroHistorico[]>(registrosMock);
+  const [carregado, setCarregado] = useState(false);
   const [busca, setBusca] = useState('');
   const [filtroTipo, setFiltroTipo] = useState<TipoMovimentacao | 'todos'>('todos');
   const [ordenacao, setOrdenacao] = useState<Ordenacao>({ coluna: null, direcao: null });
@@ -68,6 +89,8 @@ export default function PaginaHistorico() {
   const [linhaSelecionada, setLinhaSelecionada] = useState<string | null>(null);
   const [lembreteProcesso, setLembreteProcesso] = useState<string | null>(null);
   const [menuAberto, setMenuAberto] = useState<string | null>(null);
+  const [sucesso, setSucesso] = useState<InfoSucesso | null>(null);
+  const toast = useToast();
   const menuBtnRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const setMenuBtnRef = useCallback((id: string, el: HTMLButtonElement | null) => {
     if (el) menuBtnRefs.current.set(id, el);
@@ -79,9 +102,28 @@ export default function PaginaHistorico() {
   }
   const [dadosNovo, setDadosNovo] = useState<Partial<DadosNovoRegistro>>({});
 
+  // ── Persistência local (até existir API) ──────────────
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const salvos = JSON.parse(raw) as RegistroHistorico[];
+        if (Array.isArray(salvos) && salvos.length > 0) setRegistros(salvos);
+      }
+    } catch { /* storage indisponível: segue com o mock */ }
+    setCarregado(true);
+  }, []);
+
+  useEffect(() => {
+    if (!carregado) return;
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(registros)); } catch { /* ignora */ }
+  }, [registros, carregado]);
+
+  // ── Lista filtrada / ordenada ─────────────────────────
   const registrosFiltradosOrdenados = useMemo(() => {
+    const termo = busca.replace(/\D/g, '');
     let resultado = registros.filter((r) => {
-      if (busca && !r.processo.includes(busca)) return false;
+      if (termo && !r.processo.replace(/\D/g, '').includes(termo)) return false;
       if (filtroTipo !== 'todos' && r.tipo !== filtroTipo) return false;
       return true;
     });
@@ -121,11 +163,12 @@ export default function PaginaHistorico() {
   };
 
   const iconeOrdenacao = (coluna: ColunaOrdenavel) => {
-    if (ordenacao.coluna !== coluna) return <ArrowUpDown size={12} className="text-gray-300" />;
-    if (ordenacao.direcao === 'asc') return <ArrowUp size={12} className="text-blue-500" />;
-    return <ArrowDown size={12} className="text-blue-500" />;
+    if (ordenacao.coluna !== coluna) return <ArrowUpDown size={12} className="text-slate-300" />;
+    if (ordenacao.direcao === 'asc') return <ArrowUp size={12} className="text-blue-600" />;
+    return <ArrowDown size={12} className="text-blue-600" />;
   };
 
+  // ── Abrir / fechar painéis ────────────────────────────
   const abrirVisualizacao = (reg: RegistroHistorico) => {
     setLinhaSelecionada(reg.id);
     setPainelAberto(reg.id);
@@ -165,9 +208,18 @@ export default function PaginaHistorico() {
     setPainelModo('visualizar');
     setLinhaSelecionada(null);
     setLembreteProcesso(null);
+    setSucesso(null);
   };
 
-  const adicionarRegistro = (dados: DadosNovoRegistro) => {
+  const mostrarSucesso = (info: InfoSucesso) => {
+    setSucesso(info);
+    setPainelAberto('sucesso');
+    setPainelModo('sucesso');
+    setLinhaSelecionada(null);
+  };
+
+  // ── Alterações nos registros ──────────────────────────
+  const adicionarRegistro = (dados: DadosNovoRegistro): RegistroHistorico => {
     const lembretes = dados.lembrete?.data
       ? [{ id: `l${Date.now()}`, data: dados.lembrete.data, texto: dados.lembrete.texto, concluido: false }]
       : [];
@@ -181,15 +233,43 @@ export default function PaginaHistorico() {
       lembretes,
     };
     setRegistros((prev) => [novo, ...prev]);
+    return novo;
+  };
+
+  const salvarNovo = (dados: DadosNovoRegistro) => {
+    const novo = adicionarRegistro(dados);
+    toast.mostrar('Ato registrado com sucesso!');
+    mostrarSucesso({
+      processo: novo.processo,
+      data: novo.data,
+      tipos: [TIPOS_MOVIMENTACAO[novo.tipo]],
+      qtdAtos: novo.qtdAtos,
+      comObservacao: !!novo.nota,
+    });
+  };
+
+  const salvarLote = (itens: DadosNovoRegistro[]) => {
+    if (itens.length === 0) return;
+    itens.forEach((item) => adicionarRegistro(item));
+    toast.mostrar(`${itens.length} ato${itens.length > 1 ? 's' : ''} registrado${itens.length > 1 ? 's' : ''} com sucesso!`);
+    mostrarSucesso({
+      processo: itens[0].processo,
+      data: itens[0].data,
+      tipos: itens.map((i) => TIPOS_MOVIMENTACAO[i.tipo]),
+      qtdAtos: itens.reduce((s, i) => s + (i.qtdAtos || 1), 0),
+      comObservacao: itens.some((i) => !!i.nota),
+    });
   };
 
   const salvarEdicao = (id: string, dados: Partial<RegistroHistorico>) => {
     setRegistros((prev) => prev.map((r) => (r.id === id ? { ...r, ...dados } : r)));
     setPainelModo('visualizar');
+    toast.mostrar('Alterações salvas.');
   };
 
   const salvarNota = (id: string, nota: string) => {
     setRegistros((prev) => prev.map((r) => (r.id === id ? { ...r, nota } : r)));
+    toast.mostrar('Observação salva.');
   };
 
   const duplicarRegistro = (reg: RegistroHistorico) => {
@@ -201,6 +281,7 @@ export default function PaginaHistorico() {
     setRegistros((prev) => prev.filter((r) => r.id !== id));
     setMenuAberto(null);
     if (painelAberto === id) fecharPainel();
+    toast.mostrar('Registro excluído.', 'info');
   };
 
   const adicionarLembrete = (registroId: string, lembrete: { data: string; texto: string }) => {
@@ -211,6 +292,7 @@ export default function PaginaHistorico() {
           : r
       )
     );
+    toast.mostrar('Lembrete adicionado.');
   };
 
   const toggleLembrete = (registroId: string, lembreteId: string) => {
@@ -240,14 +322,14 @@ export default function PaginaHistorico() {
     : [];
 
   const registroAtual =
-    painelAberto && painelAberto !== 'novo' && painelAberto !== 'lote'
+    painelAberto && !['novo', 'lote', 'sucesso'].includes(painelAberto)
       ? registros.find((r) => r.id === painelAberto) || null
       : null;
 
   const ThOrdenavel = ({ coluna, children, className = '' }: { coluna: ColunaOrdenavel; children: React.ReactNode; className?: string }) => (
     <th
       onClick={() => alternarOrdenacao(coluna)}
-      className={`px-4 py-2.5 font-semibold text-gray-600 text-xs uppercase tracking-wider border-r border-gray-200 cursor-pointer select-none hover:bg-gray-200 transition-colors ${className}`}
+      className={`px-4 py-2.5 font-semibold text-slate-600 text-xs uppercase tracking-wider border-r border-slate-200 cursor-pointer select-none hover:bg-slate-200 transition-colors ${className}`}
     >
       <div className="flex items-center gap-1.5">
         {children}
@@ -258,46 +340,48 @@ export default function PaginaHistorico() {
 
   return (
     <div className="h-screen bg-slate-50 flex flex-col overflow-hidden">
-      <div className="bg-white border-b border-gray-200 px-6 py-3">
-        <div className="flex items-center justify-between">
+      {/* Barra superior */}
+      <div className="bg-white border-b border-slate-200 px-6 py-3">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-4">
             <a href="/servidor" className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900 transition-colors">
               <ArrowLeft size={16} />
               <span className="font-medium">Painel</span>
             </a>
-            <div className="w-px h-5 bg-gray-200" />
-            <div className="flex items-center gap-1">
+            <div className="w-px h-5 bg-slate-200" />
+            <div className="flex items-center gap-1.5">
               <FileText size={18} className="text-slate-700" />
-              <h2 className="text-base font-bold text-slate-900">Histórico de Trabalho</h2>
+              <h2 className="text-base font-bold text-slate-900">Histórico de Atos</h2>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 border border-gray-300 hover:border-gray-400 hover:bg-gray-50 transition-colors rounded">
+            <button className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 border border-slate-300 hover:border-slate-500 hover:bg-slate-50 transition-colors rounded">
               <Download size={14} /> Exportar
             </button>
-            <button onClick={abrirLote} className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 border border-gray-300 hover:border-gray-400 hover:bg-gray-50 transition-colors rounded">
-              <Copy size={14} /> Lote
+            <button onClick={abrirLote} className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 border border-slate-300 hover:border-slate-500 hover:bg-slate-50 transition-colors rounded">
+              <Copy size={14} /> Vários atos no mesmo processo
             </button>
-            <button onClick={() => abrirNovo()} className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-white bg-slate-800 hover:bg-slate-700 transition-colors rounded">
-              <Plus size={14} /> Novo registro
+            <button onClick={() => abrirNovo()} className="flex items-center gap-1.5 px-4 py-2 text-sm font-bold text-white bg-slate-900 hover:bg-slate-700 transition-colors rounded">
+              <Plus size={16} /> Registrar ato
             </button>
           </div>
         </div>
       </div>
 
-      <div className="bg-white border-b border-gray-200 px-6 py-2">
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 max-w-sm">
-            <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input type="text" placeholder="Buscar por nº do processo..."
+      {/* Busca e filtro */}
+      <div className="bg-white border-b border-slate-200 px-6 py-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative flex-1 max-w-sm min-w-[14rem]">
+            <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input type="text" placeholder="Buscar pelo nº do processo"
               value={busca} onChange={(e) => setBusca(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-500 transition-colors" />
+              className="w-full pl-8 pr-3 py-1.5 text-sm border border-slate-300 rounded focus:outline-none focus:border-slate-500 transition-colors" />
           </div>
           <div className="flex items-center gap-1.5">
-            <Filter size={14} className="text-gray-400" />
+            <Filter size={14} className="text-slate-400" />
             <select value={filtroTipo} onChange={(e) => setFiltroTipo(e.target.value as TipoMovimentacao | 'todos')}
-              className="text-sm border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:border-slate-500 bg-white cursor-pointer">
-              <option value="todos">Todos os tipos</option>
+              className="text-sm border border-slate-300 rounded px-2 py-1.5 focus:outline-none focus:border-slate-500 bg-white cursor-pointer">
+              <option value="todos">Todos os tipos de ato</option>
               {Object.entries(CATEGORIAS_MOVIMENTACAO).map(([cat, tipos]) => (
                 <optgroup key={cat} label={cat}>
                   {tipos.map((t) => (
@@ -307,25 +391,28 @@ export default function PaginaHistorico() {
               ))}
             </select>
           </div>
-          <span className="ml-auto text-xs text-gray-400">
-            {registrosVisiveis.length} de {registrosFiltradosOrdenados.length} registro{registrosFiltradosOrdenados.length !== 1 ? 's' : ''}
+          <span className="ml-auto text-xs text-slate-500">
+            {registrosVisiveis.length} de {registrosFiltradosOrdenados.length} ato{registrosFiltradosOrdenados.length !== 1 ? 's' : ''}
           </span>
         </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto bg-white">
           <table className="w-full text-sm border-collapse">
             <thead className="sticky top-0 z-10">
-              <tr className="bg-gray-100 border-b-2 border-gray-300">
-                <th className="text-left px-4 py-2.5 font-semibold text-gray-600 text-xs uppercase tracking-wider w-64 border-r border-gray-200">
-                  Nº do Processo
+              <tr className="bg-slate-100 border-b-2 border-slate-300">
+                <th className="text-left px-4 py-2.5 font-semibold text-slate-600 text-xs uppercase tracking-wider w-60 border-r border-slate-200">
+                  Nº do processo
                 </th>
                 <ThOrdenavel coluna="data" className="text-left w-28">Data</ThOrdenavel>
-                <ThOrdenavel coluna="tipo" className="text-left w-40">Tipo Movimentação</ThOrdenavel>
-                <ThOrdenavel coluna="qtdAtos" className="text-center w-20">Atos</ThOrdenavel>
-                <ThOrdenavel coluna="lembrete" className="text-center w-10">
-                  <Bell size={13} className="text-gray-400" />
+                <ThOrdenavel coluna="tipo" className="text-left w-44">Tipo de ato</ThOrdenavel>
+                <ThOrdenavel coluna="qtdAtos" className="text-center w-20">Qtd.</ThOrdenavel>
+                <th className="text-left px-4 py-2.5 font-semibold text-slate-600 text-xs uppercase tracking-wider border-r border-slate-200">
+                  Observação
+                </th>
+                <ThOrdenavel coluna="lembrete" className="text-center w-12">
+                  <Bell size={13} className="text-slate-400" aria-label="Lembrete" />
                 </ThOrdenavel>
                 <th className="text-center px-2 py-2.5 w-10" />
               </tr>
@@ -334,10 +421,10 @@ export default function PaginaHistorico() {
             <tbody>
               {registrosVisiveis.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="text-center py-16 text-gray-400">
+                  <td colSpan={7} className="text-center py-16 text-slate-400">
                     <FileText size={32} className="mx-auto mb-2 opacity-40" />
-                    <p className="font-medium text-gray-500">Nenhum registro encontrado</p>
-                    <p className="text-xs mt-1">Ajuste os filtros ou crie um novo registro</p>
+                    <p className="font-medium text-slate-600">Nenhum ato encontrado</p>
+                    <p className="text-xs mt-1">Ajuste a busca ou clique em &ldquo;Registrar ato&rdquo;.</p>
                   </td>
                 </tr>
               )}
@@ -350,35 +437,35 @@ export default function PaginaHistorico() {
                   <tr
                     key={reg.id}
                     onClick={() => abrirVisualizacao(reg)}
-                    className={`border-b border-gray-100 cursor-pointer transition-colors ${
+                    className={`border-b border-slate-100 cursor-pointer transition-colors ${
                       isSelected
                         ? 'bg-blue-50 border-l-2 border-l-blue-500'
-                        : 'hover:bg-gray-50 border-l-2 border-l-transparent'
+                        : 'hover:bg-slate-50 border-l-2 border-l-transparent'
                     }`}
                   >
-                    <td className="px-4 py-2.5 border-r border-gray-100">
-                      <span className="font-mono text-slate-800 text-xs font-medium">{reg.processo}</span>
-                      {reg.nota && <StickyNote size={11} className="inline ml-2 text-amber-400 -mt-0.5" />}
+                    <td className="px-4 py-2.5 border-r border-slate-100 align-top">
+                      <span className="font-mono text-slate-900 text-xs font-semibold">{reg.processo}</span>
                     </td>
-                    <td className="px-4 py-2.5 border-r border-gray-100 text-gray-700">{reg.data}</td>
-                    <td className="px-4 py-2.5 border-r border-gray-100">
-                      <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-slate-700">
+                    <td className="px-4 py-2.5 border-r border-slate-100 text-slate-700 tabular-nums align-top">{reg.data}</td>
+                    <td className="px-4 py-2.5 border-r border-slate-100 align-top">
+                      <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-slate-800">
                         {TIPOS_MOVIMENTACAO[reg.tipo]}
                       </span>
                     </td>
-                    <td className="text-center px-4 py-2.5 border-r border-gray-100">
-                      <span className={`inline-flex items-center justify-center w-7 h-7 rounded text-xs font-bold ${
-                        reg.qtdAtos > 1 ? 'bg-slate-800 text-white' : 'bg-gray-100 text-gray-600'
-                      }`}>
+                    <td className="text-center px-4 py-2.5 border-r border-slate-100 align-top">
+                      <span className="inline-flex items-center justify-center min-w-[1.75rem] h-7 px-1 rounded text-xs font-bold bg-slate-100 text-slate-800 tabular-nums">
                         {reg.qtdAtos}
                       </span>
                     </td>
-                    <td className="text-center px-2 py-2.5 border-r border-gray-100">
+                    <td className="px-4 py-2.5 border-r border-slate-100 align-top">
+                      <CelulaObservacao texto={reg.nota} />
+                    </td>
+                    <td className="text-center px-2 py-2.5 border-r border-slate-100 align-top">
                       {reg.lembretes.length > 0 && (
                         <button
                           onClick={(e) => abrirLembretes(reg, e)}
                           className={`p-1 rounded transition-colors ${
-                            temLembretePendente ? 'text-amber-500 hover:bg-amber-50' : 'text-gray-300 hover:bg-gray-100'
+                            temLembretePendente ? 'text-amber-600 hover:bg-amber-50' : 'text-slate-300 hover:bg-slate-100'
                           }`}
                           title={`${reg.lembretes.filter((l) => !l.concluido).length} lembrete(s) pendente(s)`}
                         >
@@ -386,11 +473,12 @@ export default function PaginaHistorico() {
                         </button>
                       )}
                     </td>
-                    <td className="text-center px-2 py-2.5 relative">
+                    <td className="text-center px-2 py-2.5 relative align-top">
                       <button
                         ref={(el) => setMenuBtnRef(reg.id, el)}
                         onClick={(e) => { e.stopPropagation(); setMenuAberto(menuAberto === reg.id ? null : reg.id); }}
-                        className="p-1 rounded hover:bg-gray-200 transition-colors text-gray-400 hover:text-gray-700"
+                        className="p-1 rounded hover:bg-slate-200 transition-colors text-slate-500 hover:text-slate-800"
+                        aria-label="Mais ações"
                       >
                         <MoreHorizontal size={15} />
                       </button>
@@ -410,10 +498,10 @@ export default function PaginaHistorico() {
 
               {temMais && (
                 <tr ref={sentinelaRef}>
-                  <td colSpan={6} className="text-center py-4">
-                    <div className="flex items-center justify-center gap-2 text-xs text-gray-400">
-                      <div className="w-4 h-4 border-2 border-gray-300 border-t-slate-600 rounded-full animate-spin" />
-                      Carregando mais registros...
+                  <td colSpan={7} className="text-center py-4">
+                    <div className="flex items-center justify-center gap-2 text-xs text-slate-500">
+                      <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+                      Carregando mais atos...
                     </div>
                   </td>
                 </tr>
@@ -423,12 +511,12 @@ export default function PaginaHistorico() {
         </div>
 
         {painelAberto && (
-          <div className="w-96 min-w-[24rem] bg-white border-l border-gray-200 flex flex-col shadow-lg">
-            <div className="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-200">
-              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+          <div className="w-96 min-w-[24rem] bg-white border-l border-slate-200 flex flex-col shadow-lg">
+            <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-200">
+              <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider">
                 {TITULOS_PAINEL[painelModo]}
               </h3>
-              <button onClick={fecharPainel} className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-700 transition-colors">
+              <button onClick={fecharPainel} className="p-1 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors" aria-label="Fechar painel">
                 <X size={16} />
               </button>
             </div>
@@ -452,13 +540,13 @@ export default function PaginaHistorico() {
               {painelModo === 'novo' && (
                 <PainelNovo
                   dadosIniciais={dadosNovo}
-                  onSalvar={(dados) => { adicionarRegistro(dados); fecharPainel(); }}
+                  onSalvar={salvarNovo}
                   onCancelar={fecharPainel}
                 />
               )}
               {painelModo === 'lote' && (
                 <PainelLote
-                  onSalvar={(items) => { items.forEach((item) => adicionarRegistro(item)); fecharPainel(); }}
+                  onSalvar={salvarLote}
                   onCancelar={fecharPainel}
                 />
               )}
@@ -472,10 +560,65 @@ export default function PaginaHistorico() {
                   registroId={painelAberto}
                 />
               )}
+              {painelModo === 'sucesso' && sucesso && (
+                <PainelSucesso
+                  info={sucesso}
+                  onRegistrarOutro={() => abrirNovo({ processo: sucesso.processo, data: sucesso.data })}
+                  onVoltar={fecharPainel}
+                />
+              )}
             </div>
           </div>
         )}
       </div>
+
+      <Toast mensagens={toast.mensagens} onFechar={toast.fechar} />
+    </div>
+  );
+}
+
+// ── Confirmação após salvar ─────────────────────────────
+
+function PainelSucesso({ info, onRegistrarOutro, onVoltar }: { info: InfoSucesso; onRegistrarOutro: () => void; onVoltar: () => void }) {
+  return (
+    <div className="p-5 space-y-5">
+      <div className="text-center py-4">
+        <div className="w-14 h-14 bg-green-100 text-green-700 flex items-center justify-center mx-auto mb-3 rounded-full">
+          <CheckCircle size={30} />
+        </div>
+        <p className="text-base font-bold text-slate-900">
+          {info.tipos.length > 1 ? `${info.tipos.length} atos registrados com sucesso!` : 'Ato registrado com sucesso!'}
+        </p>
+        <p className="text-xs text-slate-500 mt-1">Já aparece no topo da lista.</p>
+      </div>
+
+      <dl className="text-sm border border-slate-200 divide-y divide-slate-100">
+        <Linha rotulo="Processo"><span className="font-mono text-xs font-semibold">{info.processo}</span></Linha>
+        <Linha rotulo="Data">{info.data}</Linha>
+        <Linha rotulo={info.tipos.length > 1 ? 'Tipos' : 'Tipo'}>{info.tipos.join(', ')}</Linha>
+        <Linha rotulo="Qtd. de atos">{info.qtdAtos}</Linha>
+        <Linha rotulo="Observação">{info.comObservacao ? 'Registrada' : <span className="text-slate-400 italic">Sem observação</span>}</Linha>
+      </dl>
+
+      <div className="space-y-2">
+        <button onClick={onRegistrarOutro}
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-bold text-white bg-slate-900 rounded hover:bg-slate-700 transition-colors">
+          <Plus size={15} /> Registrar outro ato neste processo
+        </button>
+        <button onClick={onVoltar}
+          className="w-full px-3 py-2.5 text-sm font-medium text-slate-700 border border-slate-300 rounded hover:bg-slate-50 transition-colors">
+          Voltar para a lista
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Linha({ rotulo, children }: { rotulo: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[6.5rem_1fr] gap-2 px-3 py-2">
+      <dt className="text-xs text-slate-500">{rotulo}</dt>
+      <dd className="text-slate-800">{children}</dd>
     </div>
   );
 }

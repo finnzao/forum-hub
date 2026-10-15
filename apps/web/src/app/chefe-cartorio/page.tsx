@@ -9,6 +9,8 @@ import {
   TrendingUp,
   AlertTriangle,
   Send,
+  Database,
+  Hash,
 } from 'lucide-react';
 import { Cabecalho } from '../componentes/layout/Cabecalho';
 import { Rodape } from '../componentes/layout/Rodape';
@@ -180,6 +182,28 @@ export default function PaginaChefeCartorio() {
                 rotulo: 'servidores ativos',
                 valor: 8,
                 variante: 'sucesso',
+              }}
+            />
+            <CartaoModulo
+              icone={<Database size={28} strokeWidth={2} />}
+              titulo="Acervo da Unidade"
+              descricao="Todos os processos capturados do PJE, com responsável pelo dígito, situação da análise e quem analisou."
+              href="/chefe-cartorio/acervo"
+              estatisticas={{
+                rotulo: 'processos capturados',
+                valor: 320,
+                variante: 'padrao',
+              }}
+            />
+            <CartaoModulo
+              icone={<Hash size={28} strokeWidth={2} />}
+              titulo="Cobertura de Dígito"
+              descricao="Quem cobre cada dígito da unidade. Aponta buracos e sobreposições antes que processos fiquem sem dono."
+              href="/chefe-cartorio/cobertura"
+              estatisticas={{
+                rotulo: 'dígito sem cobertura',
+                valor: 2,
+                variante: 'perigo',
               }}
             />
             <CartaoModulo

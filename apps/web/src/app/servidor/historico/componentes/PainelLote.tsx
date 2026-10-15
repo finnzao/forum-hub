@@ -21,6 +21,7 @@ export function PainelLote({ onSalvar, onCancelar }: PainelLoteProps) {
   const [processo, setProcesso] = useState('');
   const [data, setData] = useState(dataHojeBR());
   const [itens, setItens] = useState<ItemLote[]>([{ tipo: 'despacho', qtdAtos: 1 }]);
+  const [observacao, setObservacao] = useState('');
   const [erros, setErros] = useState<Record<string, string>>({});
   const [itemExpandido, setItemExpandido] = useState<number | null>(null);
 
@@ -85,7 +86,7 @@ export function PainelLote({ onSalvar, onCancelar }: PainelLoteProps) {
     if (Object.keys(novosErros).length > 0) return;
 
     onSalvar(itens.map((item) => ({
-      processo, data, tipo: item.tipo, qtdAtos: item.qtdAtos, nota: '',
+      processo, data, tipo: item.tipo, qtdAtos: item.qtdAtos, nota: observacao.trim(),
       lembrete: item.lembrete?.data ? { data: item.lembrete.data, texto: item.lembrete.texto } : undefined,
     })));
   };
@@ -93,8 +94,8 @@ export function PainelLote({ onSalvar, onCancelar }: PainelLoteProps) {
   return (
     <div className="p-4 space-y-4">
       <div className="p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-700">
-        <p className="font-medium mb-0.5">Modo Lote</p>
-        <p className="text-xs text-blue-600">Registre vários tipos de movimentação no mesmo processo de uma vez.</p>
+        <p className="font-medium mb-0.5">Vários atos no mesmo processo</p>
+        <p className="text-xs text-blue-600">Informe o processo uma vez e liste os tipos de ato feitos nele.</p>
       </div>
 
       <CampoForm label="Nº do Processo *">
@@ -173,6 +174,13 @@ export function PainelLote({ onSalvar, onCancelar }: PainelLoteProps) {
         </button>
       </div>
 
+      <CampoForm label="Observação (opcional, vale para todos os atos acima)">
+        <textarea value={observacao} onChange={(e) => setObservacao(e.target.value.slice(0, 500))} rows={2} maxLength={500}
+          className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:border-slate-500 resize-none"
+          placeholder="Ex.: Atos feitos após retorno do mandado." />
+        <p className="text-[10px] text-slate-400 text-right tabular-nums">{observacao.length}/500</p>
+      </CampoForm>
+
       {/* Resumo */}
       <div className="p-3 bg-gray-50 border border-gray-200 rounded">
         <p className="text-xs text-gray-500">
@@ -187,7 +195,7 @@ export function PainelLote({ onSalvar, onCancelar }: PainelLoteProps) {
       <div className="flex gap-2 pt-2">
         <button onClick={handleSalvar}
           className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold text-white bg-slate-800 rounded hover:bg-slate-700 transition-colors">
-          <Save size={14} /> Salvar tudo
+          <Save size={14} /> Salvar atos
         </button>
         <button onClick={onCancelar}
           className="px-4 py-2 text-sm font-medium text-gray-500 border border-gray-300 rounded hover:bg-gray-50 transition-colors">

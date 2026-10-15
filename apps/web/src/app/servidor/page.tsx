@@ -81,12 +81,12 @@ export default function PaginaServidor() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             <CartaoModulo
               icone={<CheckSquare size={28} strokeWidth={2} />}
-              titulo="Tarefas"
-              descricao="Visualize e execute tarefas atribuídas pelo magistrado. Controle de status e histórico auditável."
-              href="/servidor/tarefas"
+              titulo="Meus Processos"
+              descricao="Os processos do seu dígito e das listas atribuídas a você, em ordem de prioridade. Marque o que fez sem digitar número."
+              href="/servidor/meus-processos"
               estatisticas={{
-                rotulo: 'pendentes',
-                valor: 8,
+                rotulo: 'P1 pendentes',
+                valor: 23,
                 variante: 'aviso',
               }}
             />
@@ -150,7 +150,7 @@ export default function PaginaServidor() {
               <h3 className="text-lg font-bold text-slate-900 uppercase tracking-wide">
                 Tarefas Urgentes
               </h3>
-              <a href="/servidor/tarefas" className="text-sm text-slate-600 hover:text-slate-900 font-semibold">
+              <a href="/servidor/meus-processos" className="text-sm text-slate-600 hover:text-slate-900 font-semibold">
                 Ver todas →
               </a>
             </div>

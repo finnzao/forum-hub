@@ -1,12 +1,14 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Plus, AlertCircle, Bell } from 'lucide-react';
+import { AlertCircle, Bell, Save } from 'lucide-react';
 import { DadosNovoRegistro, TipoMovimentacao } from '../types';
 import { CampoForm } from './CampoForm';
 import { DatePicker } from './DatePicker';
 import { SelectMovimentacao } from './SelectMovimentacao';
 import { mascaraProcesso, validarProcesso, validarData, validarDataLembrete } from '../utils';
+
+export const LIMITE_OBSERVACAO = 500;
 
 function dataHojeBR(): string {
   const d = new Date();
@@ -19,6 +21,12 @@ interface PainelNovoProps {
   onCancelar: () => void;
 }
 
+/**
+ * Cadastro de um ato em três blocos curtos:
+ * 1. Qual processo  2. O que foi feito  3. Observação (opcional)
+ * Sem etapas extras: a conferência é o próprio formulário, e a confirmação
+ * aparece no painel depois de salvar.
+ */
 export function PainelNovo({ dadosIniciais, onSalvar, onCancelar }: PainelNovoProps) {
   const [processo, setProcesso] = useState(dadosIniciais?.processo || '');
   const [data, setData] = useState(dadosIniciais?.data || dataHojeBR());
@@ -29,6 +37,8 @@ export function PainelNovo({ dadosIniciais, onSalvar, onCancelar }: PainelNovoPr
   const [lembreteData, setLembreteData] = useState('');
   const [lembreteTexto, setLembreteTexto] = useState('');
   const [erros, setErros] = useState<Record<string, string>>({});
+
+  const veioDeOutroAto = !!dadosIniciais?.processo;
 
   const limparErro = (campo: string) => {
     if (erros[campo]) setErros((p) => { const n = { ...p }; delete n[campo]; return n; });
@@ -48,61 +58,86 @@ export function PainelNovo({ dadosIniciais, onSalvar, onCancelar }: PainelNovoPr
     if (Object.keys(novosErros).length > 0) return;
 
     onSalvar({
-      processo, data, tipo, qtdAtos, nota,
+      processo, data, tipo, qtdAtos, nota: nota.trim(),
       lembrete: temLembrete && lembreteData ? { data: lembreteData, texto: lembreteTexto } : undefined,
     });
   };
 
+  const inputBase = 'w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-1';
+  const inputOk = 'border-slate-300 focus:border-slate-600 focus:ring-slate-400';
+  const inputErro = 'border-red-400 focus:border-red-500 focus:ring-red-200';
+
   return (
-    <div className="p-4 space-y-4">
-      {/* Processo */}
-      <CampoForm label="Nº do Processo *">
-        <input
-          type="text"
-          value={processo}
-          onChange={(e) => { setProcesso(mascaraProcesso(e.target.value)); limparErro('processo'); }}
-          placeholder="0000000-00.0000.0.00.0000"
-          className={`w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-1 font-mono ${
-            erros.processo ? 'border-red-400 focus:border-red-500 focus:ring-red-200' : 'border-gray-300 focus:border-slate-500 focus:ring-slate-500'
-          }`}
-          autoFocus
-        />
-        {erros.processo && <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertCircle size={11} />{erros.processo}</p>}
-      </CampoForm>
+    <div className="p-4 space-y-5">
+      {veioDeOutroAto && (
+        <p className="text-xs text-blue-900 bg-blue-50 border border-blue-200 px-3 py-2">
+          Número e data já vieram do ato anterior. Só escolha o tipo e salve.
+        </p>
+      )}
 
-      <div className="grid grid-cols-2 gap-3">
-        <CampoForm label="Data *">
-          <DatePicker value={data} onChange={(v) => { setData(v); limparErro('data'); }} erro={erros.data} />
-          {erros.data && <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertCircle size={11} />{erros.data}</p>}
-        </CampoForm>
-        <CampoForm label="Qtd Atos">
+      {/* 1. Processo */}
+      <Secao numero={1} titulo="Qual processo?">
+        <CampoForm label="Nº do processo *">
           <input
-            type="number" min={1} value={qtdAtos}
-            onChange={(e) => setQtdAtos(parseInt(e.target.value) || 1)}
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
+            type="text"
+            value={processo}
+            onChange={(e) => { setProcesso(mascaraProcesso(e.target.value)); limparErro('processo'); }}
+            placeholder="0000000-00.0000.0.00.0000"
+            aria-invalid={!!erros.processo}
+            className={`${inputBase} font-mono ${erros.processo ? inputErro : inputOk}`}
+            autoFocus={!veioDeOutroAto}
           />
+          {erros.processo
+            ? <Erro texto={erros.processo} />
+            : <p className="text-[11px] text-slate-500 mt-1">Cole o número do PJE; a máscara é preenchida sozinha.</p>}
         </CampoForm>
-      </div>
+        <CampoForm label="Data em que o ato foi feito *">
+          <DatePicker value={data} onChange={(v) => { setData(v); limparErro('data'); }} erro={erros.data} />
+          {erros.data && <Erro texto={erros.data} />}
+        </CampoForm>
+      </Secao>
 
-      <CampoForm label="Tipo de Movimentação *">
-        <SelectMovimentacao value={tipo} onChange={setTipo} />
-      </CampoForm>
+      {/* 2. O que foi feito */}
+      <Secao numero={2} titulo="O que foi feito?">
+        <CampoForm label="Tipo de ato *">
+          <SelectMovimentacao value={tipo} onChange={setTipo} />
+        </CampoForm>
+        <CampoForm label="Quantos atos desse tipo?">
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setQtdAtos((q) => Math.max(1, q - 1))} className="w-9 h-9 border border-slate-300 rounded text-slate-700 hover:bg-slate-50 font-bold" aria-label="Diminuir">−</button>
+            <input
+              type="number" min={1} value={qtdAtos}
+              onChange={(e) => setQtdAtos(Math.max(1, parseInt(e.target.value, 10) || 1))}
+              className={`${inputBase} ${inputOk} w-20 text-center tabular-nums`}
+            />
+            <button type="button" onClick={() => setQtdAtos((q) => q + 1)} className="w-9 h-9 border border-slate-300 rounded text-slate-700 hover:bg-slate-50 font-bold" aria-label="Aumentar">+</button>
+            <span className="text-xs text-slate-500">Normalmente 1.</span>
+          </div>
+        </CampoForm>
+      </Secao>
 
-      <CampoForm label="Nota (opcional)">
-        <textarea value={nota} onChange={(e) => setNota(e.target.value)} rows={2}
-          className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-500 resize-none"
-          placeholder="Observação..." />
-      </CampoForm>
+      {/* 3. Observação */}
+      <Secao numero={3} titulo="Observação" opcional>
+        <p className="text-[11px] text-slate-500 -mt-1 mb-2">
+          Registre aqui informações complementares importantes sobre este ato: pendências, particularidades, o que o próximo servidor precisa saber.
+        </p>
+        <textarea
+          value={nota}
+          onChange={(e) => setNota(e.target.value.slice(0, LIMITE_OBSERVACAO))}
+          rows={3}
+          maxLength={LIMITE_OBSERVACAO}
+          className={`${inputBase} ${inputOk} resize-none`}
+          placeholder="Ex.: AR devolvido, expedido mandado para o novo endereço."
+        />
+        <p className="text-[10px] text-slate-400 text-right tabular-nums">{nota.length}/{LIMITE_OBSERVACAO}</p>
 
-      {/* Lembrete */}
-      <div className="border-t border-gray-100 pt-4">
         <button type="button" onClick={() => setTemLembrete(!temLembrete)}
           className={`w-full flex items-center gap-2 px-3 py-2 rounded border text-sm transition-colors ${
-            temLembrete ? 'border-amber-300 bg-amber-50 text-amber-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+            temLembrete ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
           }`}>
           <Bell size={14} />
-          <span className="font-medium">{temLembrete ? 'Lembrete ativo' : 'Adicionar lembrete'}</span>
-          <span className={`ml-auto w-8 h-4 rounded-full relative transition-colors ${temLembrete ? 'bg-amber-500' : 'bg-gray-300'}`}>
+          <span className="font-medium">{temLembrete ? 'Lembrete ativo' : 'Quer um lembrete de prazo?'}</span>
+          <span className={`ml-auto w-8 h-4 rounded-full relative transition-colors ${temLembrete ? 'bg-amber-500' : 'bg-slate-300'}`}>
             <span className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform shadow-sm ${temLembrete ? 'left-4' : 'left-0.5'}`} />
           </span>
         </button>
@@ -111,26 +146,43 @@ export function PainelNovo({ dadosIniciais, onSalvar, onCancelar }: PainelNovoPr
           <div className="mt-3 space-y-3 pl-1">
             <CampoForm label="Data do lembrete *">
               <DatePicker value={lembreteData} onChange={(v) => { setLembreteData(v); limparErro('lembreteData'); }} erro={erros.lembreteData} />
-              {erros.lembreteData && <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertCircle size={11} />{erros.lembreteData}</p>}
+              {erros.lembreteData && <Erro texto={erros.lembreteData} />}
             </CampoForm>
-            <CampoForm label="Descrição (opcional)">
+            <CampoForm label="Para lembrar do quê? (opcional)">
               <input type="text" value={lembreteTexto} onChange={(e) => setLembreteTexto(e.target.value)}
-                placeholder="Ex: Verificar resposta..." className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-500" />
+                placeholder="Ex.: Verificar resposta do réu" className={`${inputBase} ${inputOk}`} />
             </CampoForm>
           </div>
         )}
-      </div>
+      </Secao>
 
-      <div className="flex gap-2 pt-2">
+      <div className="flex gap-2 pt-1">
         <button onClick={handleSalvar}
-          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold text-white bg-slate-800 rounded hover:bg-slate-700 transition-colors">
-          <Plus size={14} /> Adicionar
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-bold text-white bg-slate-900 rounded hover:bg-slate-700 transition-colors">
+          <Save size={15} /> Salvar ato
         </button>
         <button onClick={onCancelar}
-          className="px-4 py-2 text-sm font-medium text-gray-500 border border-gray-300 rounded hover:bg-gray-50 transition-colors">
+          className="px-4 py-2.5 text-sm font-medium text-slate-700 border border-slate-300 rounded hover:bg-slate-50 transition-colors">
           Cancelar
         </button>
       </div>
     </div>
   );
+}
+
+function Secao({ numero, titulo, opcional = false, children }: { numero: number; titulo: string; opcional?: boolean; children: React.ReactNode }) {
+  return (
+    <section className="space-y-3">
+      <h4 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+        <span className="w-6 h-6 rounded-full bg-slate-900 text-white text-xs flex items-center justify-center">{numero}</span>
+        {titulo}
+        {opcional && <span className="text-xs font-normal text-slate-500">(opcional)</span>}
+      </h4>
+      {children}
+    </section>
+  );
+}
+
+function Erro({ texto }: { texto: string }) {
+  return <p className="text-xs text-red-700 mt-1 flex items-center gap-1" role="alert"><AlertCircle size={11} />{texto}</p>;
 }
