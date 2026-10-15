@@ -5,15 +5,17 @@ import { createPortal } from 'react-dom';
 import { PlusCircle, Edit3, Trash2 } from 'lucide-react';
 
 interface MenuContextoProps {
-  ancorRef: React.RefObject<HTMLButtonElement | null>;
+  /** Devolve o botão que abriu o menu. Lido só dentro de efeitos, nunca durante o render. */
+  obterAncora: () => HTMLButtonElement | null;
   onDuplicar: () => void;
   onEditar: () => void;
   onExcluir: () => void;
   onFechar: () => void;
 }
 
-export function MenuContexto({ ancorRef, onDuplicar, onEditar, onExcluir, onFechar }: MenuContextoProps) {
+export function MenuContexto({ obterAncora, onDuplicar, onEditar, onExcluir, onFechar }: MenuContextoProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const ancorRef = useRef<HTMLButtonElement | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number; abrirParaCima: boolean }>({
     top: 0,
     left: 0,
@@ -22,6 +24,7 @@ export function MenuContexto({ ancorRef, onDuplicar, onEditar, onExcluir, onFech
 
   // Calcular posição com base no botão âncora
   useEffect(() => {
+    ancorRef.current = obterAncora();
     if (ancorRef.current) {
       const rect = ancorRef.current.getBoundingClientRect();
       const alturaMenu = 140; // altura aprox. do menu
@@ -34,7 +37,7 @@ export function MenuContexto({ ancorRef, onDuplicar, onEditar, onExcluir, onFech
         abrirParaCima,
       });
     }
-  }, [ancorRef]);
+  }, [obterAncora]);
 
   // Fechar ao clicar fora
   useEffect(() => {
@@ -50,7 +53,7 @@ export function MenuContexto({ ancorRef, onDuplicar, onEditar, onExcluir, onFech
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [onFechar, ancorRef]);
+  }, [onFechar]);
 
   // Fechar ao fazer scroll na tabela
   useEffect(() => {

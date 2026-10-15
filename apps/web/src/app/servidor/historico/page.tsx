@@ -96,10 +96,10 @@ export default function PaginaHistorico() {
     if (el) menuBtnRefs.current.set(id, el);
     else menuBtnRefs.current.delete(id);
   }, []);
-  const ancorRefAtual = useRef<HTMLButtonElement | null>(null);
-  if (menuAberto) {
-    ancorRefAtual.current = menuBtnRefs.current.get(menuAberto) || null;
-  }
+  const obterAncoraMenu = useCallback(
+    () => (menuAberto ? menuBtnRefs.current.get(menuAberto) || null : null),
+    [menuAberto],
+  );
   const [dadosNovo, setDadosNovo] = useState<Partial<DadosNovoRegistro>>({});
 
   // ── Persistência local (até existir API) ──────────────
@@ -484,7 +484,7 @@ export default function PaginaHistorico() {
                       </button>
                       {menuAberto === reg.id && (
                         <MenuContexto
-                          ancorRef={ancorRefAtual}
+                          obterAncora={obterAncoraMenu}
                           onDuplicar={() => duplicarRegistro(reg)}
                           onEditar={() => { setMenuAberto(null); abrirEdicao(reg); }}
                           onExcluir={() => excluirRegistro(reg.id)}
@@ -523,6 +523,7 @@ export default function PaginaHistorico() {
             <div className="flex-1 overflow-y-auto">
               {painelModo === 'visualizar' && registroAtual && (
                 <PainelVisualizar
+                  key={registroAtual.id}
                   registro={registroAtual}
                   onEditar={() => setPainelModo('editar')}
                   onDuplicar={() => duplicarRegistro(registroAtual)}

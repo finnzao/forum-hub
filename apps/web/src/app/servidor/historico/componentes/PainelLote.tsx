@@ -31,7 +31,7 @@ export function PainelLote({ onSalvar, onCancelar }: PainelLoteProps) {
 
   const adicionarItem = () => setItens([...itens, { tipo: 'despacho', qtdAtos: 1 }]);
 
-  const atualizarItem = (idx: number, campo: string, valor: any) => {
+  const atualizarItem = (idx: number, campo: string, valor: string | number) => {
     setItens(itens.map((item, i) => {
       if (i !== idx) return item;
       if (campo === 'lembreteData') {

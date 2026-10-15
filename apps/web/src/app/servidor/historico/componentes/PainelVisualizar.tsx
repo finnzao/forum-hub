@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Bell,
   BellRing,
@@ -27,14 +27,11 @@ export function PainelVisualizar({
   onSalvarNota,
   onVerLembretes,
 }: PainelVisualizarProps) {
+  // O pai monta este painel com key={registro.id}, então trocar de registro
+  // recria o estado local sem precisar de efeito.
   const [nota, setNota] = useState(registro.nota || '');
   const [notaEditando, setNotaEditando] = useState(false);
   const temLembrete = registro.lembretes.length > 0;
-
-  useEffect(() => {
-    setNota(registro.nota || '');
-    setNotaEditando(false);
-  }, [registro.id, registro.nota]);
 
   return (
     <div className="p-4 space-y-5">
